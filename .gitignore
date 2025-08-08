@@ -1,0 +1,83 @@
+
+# 10X Agentic Coding Production
+Knowledge/context/memory/session_*.md
+Knowledge/context/memory/temp_*.md
+.claude/temp/
+Instructions/temp/
+logs/sessions/
+logs/hooks/temp/
+databases/temp/
+*.backup.*
+mcp_servers/mcp_venv/
+mcp_servers/logs/
+*.log
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Packet capture files
+*.pcap
+*.cap
+*.pcapng
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Test reports
+test_*.json
+*_test_report_*.json
+*_test_results.json
+
+# Security analysis outputs
+security_report_*.json
+threat_intelligence_report.json
+external_ip_security_report.json
+
+# Memory and cache
+data/memory/
+memory.json
+
+# Claude specific
+.claude.json
+claude_desktop_config.json

@@ -1,0 +1,22 @@
+{
+  "mcps": {
+    "msfconsole-stable": {
+      "command": "python3",
+      "args": ["/home/dell/coding/mcp/msfconsole/mcp_server_stable.py"],
+      "env": {
+        "PYTHONPATH": "/home/dell/coding/mcp/msfconsole",
+        "MSF_DATABASE_CONFIG": "/dev/null",
+        "RUBY_GC_HEAP_INIT_SLOTS": "100000",
+        "LANG": "en_US.UTF-8"
+      }
+    },
+    "wireshark-mcp": {
+      "command": "python3",
+      "args": ["/home/dell/coding/mcp/wireshark-mcp/enhanced_server.py"],
+      "env": {
+        "PYTHONPATH": "/home/dell/coding/mcp/wireshark-mcp",
+        "LANG": "en_US.UTF-8"
+      }
+    }
+  }
+}
