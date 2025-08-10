@@ -1,5 +1,5 @@
 import asyncio
-from server import main
+from wireshark_mcp.server import main
 
 
 def run():

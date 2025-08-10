@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server import (
+from wireshark_mcp.server import (
     handle_protocol_statistics,
     handle_analyze_pcap_enhanced,
     handle_system_info,

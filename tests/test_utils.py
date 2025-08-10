@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server import run_tshark_command, handle_generate_filter
+from wireshark_mcp.server import run_tshark_command, handle_generate_filter
 
 
 class FakeProcess:

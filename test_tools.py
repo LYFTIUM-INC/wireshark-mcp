@@ -12,7 +12,7 @@ from pathlib import Path
 # Add current directory to path to import server
 sys.path.insert(0, str(Path(__file__).parent))
 
-from server import (
+from wireshark_mcp.server import (
     handle_realtime_json_capture,
     handle_protocol_statistics, 
     handle_analyze_pcap_enhanced
