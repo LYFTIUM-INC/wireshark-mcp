@@ -767,21 +767,23 @@ def parse_endpoints(output: str) -> Dict[str, Any]:
     }
 
 def parse_io_statistics(output: str) -> Dict[str, Any]:
-    """Parse TShark I/O statistics output."""
+    """Parse TShark I/O statistics output.
+    Supports lines with or without a '|' separator.
+    """
     lines = output.strip().split('\n')
     intervals = []
-    
+
     for line in lines:
-        if "Interval:" in line or "-" in line and "|" in line:
-            # Parse interval line
-            match = re.search(r'(\d+\.\d+)\s*-\s*(\d+\.\d+)\s+(\d+)', line)
+        if "-" in line:
+            # Parse interval line like: "0.000-1.000      10" or "0.000-1.000 | 10"
+            match = re.search(r'(\d+\.\d+)\s*-\s*(\d+\.\d+)\s*\|?\s*(\d+)', line)
             if match:
                 intervals.append({
                     "start": float(match.group(1)),
                     "end": float(match.group(2)),
                     "packets": int(match.group(3))
                 })
-    
+
     return {
         "interval_count": len(intervals),
         "intervals": intervals
