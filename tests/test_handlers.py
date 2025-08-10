@@ -231,3 +231,56 @@ def test_follow_stream(monkeypatch, tmp_path):
     payload = json.loads(res[0].text)
     assert payload["ok"] is True
     assert payload["data"]["bytes"]
+
+
+def test_detect_port_scans(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'tcp.flags.syn==1' in ' '.join(cmd)
+    # simulate two syns from same src to two ports
+    fake = FakeProcess(0, stdout=b"192.168.1.10\t80\n192.168.1.10\t443\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "p.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_detect_port_scans
+    res = asyncio.get_event_loop().run_until_complete(handle_detect_port_scans({"filepath": str(p), "syn_threshold": 1, "distinct_ports_threshold": 1}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["suspects"]
+
+
+def test_detect_dns_tunneling(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'dns && dns.qry.name' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=b"verylonglabelverylonglabel.example.com\nshort.com\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "d.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_detect_dns_tunneling
+    res = asyncio.get_event_loop().run_until_complete(handle_detect_dns_tunneling({"filepath": str(p), "length_threshold": 10, "label_length_threshold": 10}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["suspicious"]
+
+
+def test_http_statistics(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'http' in cmd
+    fake = FakeProcess(0, stdout=b"example.com\tGET\t200\nexample.com\tPOST\t404\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "h.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_http_statistics
+    res = asyncio.get_event_loop().run_until_complete(handle_http_statistics({"filepath": str(p)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["top_hosts"]
+
+
+def test_tls_ja3_fingerprints(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'tls.handshake' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=b"ja3hash\tja3shash\nja3hash\t\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "t.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_tls_ja3_fingerprints
+    res = asyncio.get_event_loop().run_until_complete(handle_tls_ja3_fingerprints({"filepath": str(p)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["ja3"]

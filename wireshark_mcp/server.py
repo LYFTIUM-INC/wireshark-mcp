@@ -287,6 +287,66 @@ async def list_tools() -> List[Tool]:
                 "required": ["filepath"]
             }
         ),
+        # Threat heuristics and analytics
+        Tool(
+            name="wireshark_detect_port_scans",
+            description="Detect potential port scans/SYN floods by analyzing SYNs and distinct destination ports per source",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"},
+                    "syn_threshold": {"type": "integer", "default": 100},
+                    "distinct_ports_threshold": {"type": "integer", "default": 50}
+                },
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="wireshark_detect_dns_tunneling",
+            description="Detect potential DNS tunneling via long/high-entropy query names and TXT volume",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"},
+                    "length_threshold": {"type": "integer", "default": 100},
+                    "label_length_threshold": {"type": "integer", "default": 50}
+                },
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="wireshark_http_statistics",
+            description="Summarize HTTP hosts, methods, status codes",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"}
+                },
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="wireshark_tls_ja3_fingerprints",
+            description="Extract TLS JA3/JA3S fingerprints and counts",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"}
+                },
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="wireshark_detect_cleartext_credentials",
+            description="Detect likely cleartext credentials across common protocols",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"}
+                },
+                "required": ["filepath"]
+            }
+        ),
     ]
 
 @server.call_tool()
@@ -318,6 +378,16 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             return await handle_export_objects(arguments)
         elif name == "wireshark_follow_stream":
             return await handle_follow_stream(arguments)
+        elif name == "wireshark_detect_port_scans":
+            return await handle_detect_port_scans(arguments)
+        elif name == "wireshark_detect_dns_tunneling":
+            return await handle_detect_dns_tunneling(arguments)
+        elif name == "wireshark_http_statistics":
+            return await handle_http_statistics(arguments)
+        elif name == "wireshark_tls_ja3_fingerprints":
+            return await handle_tls_ja3_fingerprints(arguments)
+        elif name == "wireshark_detect_cleartext_credentials":
+            return await handle_detect_cleartext_credentials(arguments)
         
         else:
             return [TextContent(type="text", text=f"❌ Unknown tool: {name}")]
@@ -1988,6 +2058,118 @@ async def handle_follow_stream(args: Dict[str, Any]) -> List[TextContent]:
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=[str(e)])))]
+
+async def handle_detect_port_scans(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    syn_th = int(args.get("syn_threshold", 100))
+    distinct_th = int(args.get("distinct_ports_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0', '-T', 'fields', '-e', 'ip.src', '-e', 'tcp.dstport']
+        result = await run_tshark_command(cmd)
+        syn_counts: Dict[str, int] = {}
+        dst_ports: Dict[str, set] = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) >= 2:
+                src, dport = parts[0], parts[1]
+                syn_counts[src] = syn_counts.get(src, 0) + 1
+                dst_ports.setdefault(src, set()).add(dport)
+        suspects = []
+        for src, count in syn_counts.items():
+            if count >= syn_th or len(dst_ports.get(src, set())) >= distinct_th:
+                suspects.append({"src": src, "syns": count, "distinct_ports": len(dst_ports.get(src, set()))})
+        payload = make_result("wireshark_detect_port_scans", True, method="tshark", data={"suspects": suspects})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=[str(e)])))]
+
+def _entropy(s: str) -> float:
+    import math
+    from collections import Counter
+    if not s:
+        return 0.0
+    c = Counter(s)
+    n = len(s)
+    return -sum((freq/n) * math.log2(freq/n) for freq in c.values())
+
+async def handle_detect_dns_tunneling(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    len_th = int(args.get("length_threshold", 100))
+    label_th = int(args.get("label_length_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'dns && dns.qry.name', '-T', 'fields', '-e', 'dns.qry.name']
+        result = await run_tshark_command(cmd)
+        suspicious = []
+        for line in result.stdout.splitlines():
+            q = line.strip()
+            if not q:
+                continue
+            total_len = len(q)
+            max_label = max((len(lbl) for lbl in q.split('.')), default=0)
+            ent = _entropy(q.replace('.', ''))
+            if total_len >= len_th or max_label >= label_th or ent > 4.2:
+                suspicious.append({"qname": q, "length": total_len, "max_label": max_label, "entropy": round(ent, 2)})
+        payload = make_result("wireshark_detect_dns_tunneling", True, method="tshark", data={"suspicious": suspicious[:50]})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=[str(e)])))]
+
+async def handle_http_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'http', '-T', 'fields', '-e', 'http.host', '-e', 'http.request.method', '-e', 'http.response.code']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        hosts = Counter()
+        methods = Counter()
+        codes = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                hosts[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                methods[parts[1]] += 1
+            if len(parts) >= 3 and parts[2]:
+                codes[parts[2]] += 1
+        payload = make_result("wireshark_http_statistics", True, method="tshark", data={
+            "top_hosts": hosts.most_common(10),
+            "methods": methods,
+            "status_codes": codes,
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=[str(e)])))]
+
+async def handle_tls_ja3_fingerprints(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=["File not found"])))]
+    try:
+        # Modern tshark exposes tls.handshake.ja3 and tls.handshake.ja3s when enabled
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tls.handshake', '-T', 'fields', '-e', 'tls.handshake.ja3', '-e', 'tls.handshake.ja3s']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        ja3 = Counter()
+        ja3s = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                ja3[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                ja3s[parts[1]] += 1
+        payload = make_result("wireshark_tls_ja3_fingerprints", True, method="tshark", data={
+            "ja3": ja3.most_common(20),
+            "ja3s": ja3s.most_common(20)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=[str(e)])))]
 
 if __name__ == "__main__":
     asyncio.run(main())
