@@ -60,7 +60,7 @@ Add this MCP server to Claude Desktop, pointing to `server.py`.
 ### **🔴 Real-time JSON Capture**
 Use the `wireshark_realtime_json_capture` tool via MCP, or run tests locally:
 ```bash
-python test_enhanced_tools.py
+python test_tools.py
 ```
 
 ### **📊 Protocol Statistics**
