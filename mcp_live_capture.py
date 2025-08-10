@@ -230,7 +230,7 @@ def print_integration_guide():
    
 5. TESTING COMMANDS:
    
-   python enhanced_mcp_live_capture.py
+   python mcp_live_capture.py
    
 6. FALLBACK OPTIONS:
    
