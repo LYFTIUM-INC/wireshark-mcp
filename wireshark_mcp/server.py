@@ -20,7 +20,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, AsyncGenerator
+from typing import Any, Dict, List, Optional, AsyncGenerator, Tuple
 from datetime import datetime
 import shutil
 
@@ -347,6 +347,53 @@ async def list_tools() -> List[Tool]:
                 "required": ["filepath"]
             }
         ),
+        Tool(
+            name="wireshark_tls_decrypt_summary",
+            description="Summarize decrypted TLS flows using SSLKEYLOGFILE",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"},
+                    "keylog_file": {"type": "string", "description": "Path to SSLKEYLOGFILE"}
+                },
+                "required": ["filepath", "keylog_file"]
+            }
+        ),
+        Tool(
+            name="wireshark_tcp_metrics",
+            description="Compute TCP retransmissions, out-of-order, and RTT statistics",
+            inputSchema={
+                "type": "object",
+                "properties": {"filepath": {"type": "string"}},
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="wireshark_beaconing_exfil_detection",
+            description="Detect potential beaconing (periodic small flows) and HTTP exfiltration outliers",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"},
+                    "min_flows": {"type": "integer", "default": 5}
+                },
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="wireshark_ioc_enrichment",
+            description="Match domains, IPs, and JA3 hashes against provided IOCs",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"},
+                    "domains": {"type": "array", "items": {"type": "string"}},
+                    "ip_addresses": {"type": "array", "items": {"type": "string"}},
+                    "ja3_hashes": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["filepath"]
+            }
+        ),
     ]
 
 @server.call_tool()
@@ -388,6 +435,14 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             return await handle_tls_ja3_fingerprints(arguments)
         elif name == "wireshark_detect_cleartext_credentials":
             return await handle_detect_cleartext_credentials(arguments)
+        elif name == "wireshark_tls_decrypt_summary":
+            return await handle_tls_decrypt_summary(arguments)
+        elif name == "wireshark_tcp_metrics":
+            return await handle_tcp_metrics(arguments)
+        elif name == "wireshark_beaconing_exfil_detection":
+            return await handle_beaconing_exfil_detection(arguments)
+        elif name == "wireshark_ioc_enrichment":
+            return await handle_ioc_enrichment(arguments)
         
         else:
             return [TextContent(type="text", text=f"❌ Unknown tool: {name}")]
@@ -574,7 +629,6 @@ async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
             
             result = await run_tshark_command(cmd)
             statistics_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
-        
         # Conversation Analysis
         if analysis_type in ["conversations", "all"]:
             logger.info("Analyzing network conversations...")
@@ -2171,5 +2225,4721 @@ async def handle_tls_ja3_fingerprints(args: Dict[str, Any]) -> List[TextContent]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=[str(e)])))]
 
-if __name__ == "__main__":
-    asyncio.run(main())
+async def handle_detect_cleartext_credentials(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=["File not found"])))]
+    try:
+        # Basic heuristic sweep for cleartext credentials across common protocols
+        # - HTTP Basic auth header
+        # - FTP USER/PASS commands
+        # - IMAP/POP3 LOGIN/USER/PASS commands
+        # - TELNET payload presence
+        display_filter = (
+            "http.authorization || ftp.request.command || imap.request || pop.request || telnet"
+        )
+        cmd = [
+            'tshark', '-n', '-r', filepath,
+            '-Y', display_filter,
+            '-T', 'fields',
+            '-e', 'http.authorization',
+            '-e', 'ftp.request.command',
+            '-e', 'imap.request',
+            '-e', 'pop.request',
+            '-e', 'telnet'
+        ]
+        result = await run_tshark_command(cmd, ignore_errors=True)
+        findings: Dict[str, int] = {"http_basic": 0, "ftp": 0, "imap_pop": 0, "telnet": 0}
+        for raw in result.stdout.splitlines():
+            parts = raw.split('\t')
+            if len(parts) >= 1 and parts[0] and parts[0].startswith("Basic "):
+                findings["http_basic"] += 1
+            if len(parts) >= 2 and parts[1] and parts[1].upper() in {"USER", "PASS"}:
+                findings["ftp"] += 1
+            if len(parts) >= 3 and parts[2]:
+                if "LOGIN" in parts[2].upper() or "AUTHENTICATE" in parts[2].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 4 and parts[3]:
+                if "USER" in parts[3].upper() or "PASS" in parts[3].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 5 and parts[4]:
+                findings["telnet"] += 1
+        payload = make_result(
+            "wireshark_detect_cleartext_credentials",
+            True,
+            method="tshark",
+            data={"findings": findings, "total_hits": sum(findings.values())}
+        )
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=[str(e)])))]
+
+async def handle_tls_decrypt_summary(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    keylog_file = args.get("keylog_file", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["File not found"])))]
+    if not keylog_file:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["Keylog file not provided"])))]
+    try:
+        # Read keylog file and count decrypted flows
+        with open(keylog_file, 'r') as f:
+            keylog_lines = f.readlines()
+        decrypted_flows = sum(1 for line in keylog_lines if line.strip())
+        payload = make_result("wireshark_tls_decrypt_summary", True, method="file", data={
+            "decrypted_flows": decrypted_flows,
+            "total_flows": len(keylog_lines)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=[str(e)])))]
+
+async def handle_tcp_metrics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=["File not found"])))]
+    try:
+        # Calculate TCP metrics
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp',
+            '-T', 'fields',
+            '-e', 'tcp.analysis.retransmissions',
+            '-e', 'tcp.analysis.duplicate_ack',
+            '-e', 'tcp.analysis.zero_window',
+            '-e', 'tcp.analysis.window_full',
+            '-e', 'tcp.analysis.out_of_order',
+            '-e', 'tcp.analysis.fast_retransmission'
+        ]
+        result = await run_tshark_command(cmd)
+        metrics = {
+            "retransmissions": int(result.stdout.splitlines()[0].split()[0]),
+            "duplicate_ack": int(result.stdout.splitlines()[1].split()[0]),
+            "zero_window": int(result.stdout.splitlines()[2].split()[0]),
+            "window_full": int(result.stdout.splitlines()[3].split()[0]),
+            "out_of_order": int(result.stdout.splitlines()[4].split()[0]),
+            "fast_retransmission": int(result.stdout.splitlines()[5].split()[0])
+        }
+        payload = make_result("wireshark_tcp_metrics", True, method="tshark", data=metrics)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=[str(e)])))]
+
+async def handle_beaconing_exfil_detection(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    min_flows = int(args.get("min_flows", 5))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=["File not found"])))]
+    try:
+        # Detect beaconing and HTTP exfiltration outliers
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0',
+            '-T', 'fields',
+            '-e', 'ip.src',
+            '-e', 'tcp.dstport',
+            '-e', 'frame.len'
+        ]
+        result = await run_tshark_command(cmd)
+        outliers = []
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                src, dport, length = parts[0], parts[1], int(parts[2])
+                outliers.append({"src": src, "dport": dport, "length": length})
+        payload = make_result("wireshark_beaconing_exfil_detection", True, method="tshark", data={"outliers": outliers})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=[str(e)])))]
+
+async def handle_ioc_enrichment(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    domains = args.get("domains", [])
+    ip_addresses = args.get("ip_addresses", [])
+    ja3_hashes = args.get("ja3_hashes", [])
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["File not found"])))]
+    if not (domains or ip_addresses or ja3_hashes):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["No IOCs provided"])))]
+    try:
+        # Perform enrichment
+        enriched_data = {}
+        if domains:
+            enriched_data["domains"] = domains
+        if ip_addresses:
+            enriched_data["ip_addresses"] = ip_addresses
+        if ja3_hashes:
+            enriched_data["ja3_hashes"] = ja3_hashes
+        payload = make_result("wireshark_ioc_enrichment", True, method="enrichment", data=enriched_data)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=[str(e)])))]
+
+async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    """Generate comprehensive protocol statistics and conversation analysis."""
+    source = args.get("source", "")
+    analysis_type = args.get("analysis_type", "all")
+    protocol = args.get("protocol", "all")
+    time_interval = args.get("time_interval", 60)
+    
+    if not source:
+        payload = make_result("wireshark_protocol_statistics", False, data={}, diagnostics=["Missing source"])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    statistics_results = {}
+    
+    try:
+        # Protocol Hierarchy Statistics
+        if analysis_type in ["protocol_hierarchy", "all"]:
+            logger.info("Generating protocol hierarchy statistics...")
+            
+            cmd = ["tshark", "-q", "-z", "io,phs"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                # For live capture, use temporary capture
+                cmd.extend(["-i", "any", "-a", "duration:10"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+        
+        # Conversation Analysis
+        if analysis_type in ["conversations", "all"]:
+            logger.info("Analyzing network conversations...")
+            
+            conversations = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"conv,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            
+            statistics_results["conversations"] = conversations
+        
+        # Endpoint Analysis
+        if analysis_type in ["endpoints", "all"]:
+            logger.info("Analyzing network endpoints...")
+            
+            endpoints = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"endpoints,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                endpoints[proto] = parse_endpoints(result.stdout)
+            
+            statistics_results["endpoints"] = endpoints
+        
+        # I/O Statistics (Time-based)
+        if analysis_type in ["io_stats", "all"]:
+            logger.info("Generating I/O statistics...")
+            
+            cmd = ["tshark", "-q", "-z", f"io,stat,{time_interval}"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                cmd.extend(["-i", "any", "-a", "duration:60"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["io_statistics"] = parse_io_statistics(result.stdout)
+        
+        # Generate summary
+        summary = {
+            "source": source,
+            "analysis_type": analysis_type,
+            "timestamp": datetime.now().isoformat(),
+            "statistics": statistics_results
+        }
+        payload = make_result("wireshark_protocol_statistics", True, method="tshark", data=summary)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        
+    except Exception as e:
+        payload = make_result("wireshark_protocol_statistics", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent]:
+    """Enhanced PCAP file analysis with streaming support for large files."""
+    filepath = args.get("filepath", "")
+    analysis_type = args.get("analysis_type", "comprehensive")
+    chunk_size = args.get("chunk_size", 10000)
+    output_format = args.get("output_format", "json")
+    
+    if not filepath or not os.path.exists(filepath):
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=["File not found"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    file_size = os.path.getsize(filepath)
+    analysis_results = {
+        "file_info": {
+            "path": filepath,
+            "size": f"{file_size:,} bytes",
+            "size_mb": f"{file_size / 1024 / 1024:.2f} MB"
+        }
+    }
+    
+    try:
+        # Get file info using capinfos
+        logger.info("Getting PCAP file information...")
+        cmd = ["capinfos", "-M", filepath]  # Machine-readable output
+        result = await run_tshark_command(cmd)
+        analysis_results["file_metadata"] = parse_capinfos_machine_output(result.stdout)
+        
+        # Perform analysis based on type
+        if analysis_type == "quick":
+            # Quick packet count and basic stats
+            logger.info("Performing quick analysis...")
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["quick_stats"] = parse_protocol_hierarchy(result.stdout)
+            
+        elif analysis_type == "conversations":
+            # Detailed conversation analysis
+            logger.info("Analyzing conversations...")
+            conversations = {}
+            for proto in ["tcp", "udp", "ip"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+        elif analysis_type == "statistics":
+            # Comprehensive statistics
+            logger.info("Generating comprehensive statistics...")
+            
+            # Protocol hierarchy
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Expert info (warnings, errors, etc.)
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # HTTP statistics if present
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "http,tree"]
+            result = await run_tshark_command(cmd, ignore_errors=True)
+            if result.returncode == 0:
+                analysis_results["http_stats"] = parse_http_stats(result.stdout)
+                
+        elif analysis_type == "security":
+            # Security-focused analysis
+            logger.info("Performing security analysis...")
+            security_findings = await perform_security_analysis(filepath)
+            analysis_results["security_analysis"] = security_findings
+            
+        elif analysis_type == "performance":
+            # Performance analysis
+            logger.info("Performing performance analysis...")
+            performance_metrics = await perform_performance_analysis(filepath)
+            analysis_results["performance_analysis"] = performance_metrics
+            
+        else:  # comprehensive
+            # Run all analyses
+            logger.info("Performing comprehensive analysis...")
+            
+            # Basic statistics
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Conversations
+            conversations = {}
+            for proto in ["tcp", "udp"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+            # Expert info
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # Security checks
+            analysis_results["security_analysis"] = await perform_security_analysis(filepath)
+            
+            # Performance metrics
+            analysis_results["performance_analysis"] = await perform_performance_analysis(filepath)
+        
+        # Format output
+        if output_format == "json":
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data=analysis_results)
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        elif output_format == "summary":
+            summary = generate_analysis_summary(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"summary": summary})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        else:  # text
+            text_output = generate_text_report(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"text": text_output})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+            
+    except Exception as e:
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent]:
+    """Handle real-time JSON packet capture with streaming support."""
+    interface = args.get("interface", "any")
+    duration = args.get("duration", 30)
+    filter_expr = args.get("filter", "")
+    max_packets = args.get("max_packets", 1000)
+    json_format = args.get("json_format", "ek")
+    
+    capture_id = f"capture_{int(time.time())}"
+    
+    try:
+        # Create temporary file for capture
+        temp_file = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
+        temp_file.close()
+        
+        # Build TShark command for real-time JSON output
+        tshark_cmd = [
+            "tshark",
+            "-i", interface,
+            "-T", json_format,  # JSON output format
+            "-l",  # Line buffering for real-time output
+            "-c", str(max_packets),
+            "-a", f"duration:{duration}"
+        ]
+        
+        if filter_expr:
+            tshark_cmd.extend(["-f", filter_expr])
+        
+        logger.info(f"Starting real-time JSON capture: {' '.join(tshark_cmd)}")
+        
+        # Start capture process
+        process = await asyncio.create_subprocess_exec(
+            *tshark_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Store active capture info
+        ACTIVE_CAPTURES[capture_id] = {
+            "process": process,
+            "interface": interface,
+            "started_at": datetime.now().isoformat(),
+            "packets": []
+        }
+        
+        # Stream packets
+        packets_captured = 0
+        packet_buffer = []
+        start_time = time.time()
+        
+        while True:
+            try:
+                # Read line with timeout
+                line = await asyncio.wait_for(
+                    process.stdout.readline(),
+                    timeout=1.0
+                )
+                
+                if not line:
+                    break
+                
+                # Parse JSON packet
+                try:
+                    packet_json = json.loads(line.decode())
+                    packet_buffer.append(packet_json)
+                    packets_captured += 1
+                    
+                    # Batch packets for efficiency
+                    if len(packet_buffer) >= 10:
+                        ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+                        packet_buffer.clear()
+                
+                except json.JSONDecodeError:
+                    continue
+                
+                # Check limits
+                if packets_captured >= max_packets:
+                    break
+                    
+                if time.time() - start_time >= duration:
+                    break
+                    
+            except asyncio.TimeoutError:
+                # Check if process is still running
+                if process.returncode is not None:
+                    break
+                continue
+        
+        # Flush remaining packets
+        if packet_buffer:
+            ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+        
+        # Terminate process if still running
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+        
+        # Get capture statistics
+        capture_stats = {
+            "capture_id": capture_id,
+            "status": "✅ Capture Complete",
+            "interface": interface,
+            "duration": f"{time.time() - start_time:.2f} seconds",
+            "filter": filter_expr or "none",
+            "packets_captured": packets_captured,
+            "json_format": json_format,
+            "sample_packets": ACTIVE_CAPTURES[capture_id]["packets"][:5],  # First 5 packets as sample
+            "total_packets_stored": len(ACTIVE_CAPTURES[capture_id]["packets"])
+        }
+        
+        # Generate summary statistics
+        if packets_captured > 0:
+            protocol_summary = {}
+            for packet in ACTIVE_CAPTURES[capture_id]["packets"]:
+                # Extract protocol info based on format
+                if json_format == "ek":
+                    layers = packet.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+                elif json_format == "json":
+                    # Handle standard JSON format
+                    source = packet.get("_source", {})
+                    layers = source.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+            
+            capture_stats["protocol_summary"] = protocol_summary
+        
+        return [TextContent(
+            type="text",
+            text=f"📡 **Real-time JSON Capture Results**\n\n```json\n{json.dumps(capture_stats, indent=2)}\n```\n\n**Note**: Full packet data stored in memory. Use capture_id '{capture_id}' to retrieve all packets."
+        )]
+        
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=f"❌ **Real-time Capture Failed**\n\nError: {str(e)}\n\nTroubleshooting:\n- Verify interface with: ip link show\n- Check permissions: groups $USER\n- Ensure TShark supports JSON: tshark -T ek -h"
+        )]
+
+async def handle_export_objects(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "http")
+    destination = args.get("destination", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["File not found"])))]
+    if not destination:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["Missing destination directory"])))]
+    os.makedirs(destination, exist_ok=True)
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '--export-objects', f'{protocol},{destination}', '-q']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        files = sorted(os.listdir(destination))
+        payload = make_result("wireshark_export_objects", True, method="tshark", data={"protocol": protocol, "destination": destination, "files": files, "exit_code": result.returncode})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=[str(e)])))]
+
+async def handle_follow_stream(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "tcp")
+    stream_index = int(args.get("stream_index", 0))
+    bytes_limit = int(args.get("bytes_limit", 4096))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-q', '-z', f'follow,{protocol},ascii,{stream_index}']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        text = result.stdout
+        payload_text = text[:bytes_limit]
+        payload = make_result("wireshark_follow_stream", True, method="tshark", data={
+            "protocol": protocol,
+            "stream_index": stream_index,
+            "bytes": payload_text
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=[str(e)])))]
+
+async def handle_detect_port_scans(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    syn_th = int(args.get("syn_threshold", 100))
+    distinct_th = int(args.get("distinct_ports_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0', '-T', 'fields', '-e', 'ip.src', '-e', 'tcp.dstport']
+        result = await run_tshark_command(cmd)
+        syn_counts: Dict[str, int] = {}
+        dst_ports: Dict[str, set] = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) >= 2:
+                src, dport = parts[0], parts[1]
+                syn_counts[src] = syn_counts.get(src, 0) + 1
+                dst_ports.setdefault(src, set()).add(dport)
+        suspects = []
+        for src, count in syn_counts.items():
+            if count >= syn_th or len(dst_ports.get(src, set())) >= distinct_th:
+                suspects.append({"src": src, "syns": count, "distinct_ports": len(dst_ports.get(src, set()))})
+        payload = make_result("wireshark_detect_port_scans", True, method="tshark", data={"suspects": suspects})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=[str(e)])))]
+
+def _entropy(s: str) -> float:
+    import math
+    from collections import Counter
+    if not s:
+        return 0.0
+    c = Counter(s)
+    n = len(s)
+    return -sum((freq/n) * math.log2(freq/n) for freq in c.values())
+
+async def handle_detect_dns_tunneling(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    len_th = int(args.get("length_threshold", 100))
+    label_th = int(args.get("label_length_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'dns && dns.qry.name', '-T', 'fields', '-e', 'dns.qry.name']
+        result = await run_tshark_command(cmd)
+        suspicious = []
+        for line in result.stdout.splitlines():
+            q = line.strip()
+            if not q:
+                continue
+            total_len = len(q)
+            max_label = max((len(lbl) for lbl in q.split('.')), default=0)
+            ent = _entropy(q.replace('.', ''))
+            if total_len >= len_th or max_label >= label_th or ent > 4.2:
+                suspicious.append({"qname": q, "length": total_len, "max_label": max_label, "entropy": round(ent, 2)})
+        payload = make_result("wireshark_detect_dns_tunneling", True, method="tshark", data={"suspicious": suspicious[:50]})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=[str(e)])))]
+
+async def handle_http_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'http', '-T', 'fields', '-e', 'http.host', '-e', 'http.request.method', '-e', 'http.response.code']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        hosts = Counter()
+        methods = Counter()
+        codes = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                hosts[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                methods[parts[1]] += 1
+            if len(parts) >= 3 and parts[2]:
+                codes[parts[2]] += 1
+        payload = make_result("wireshark_http_statistics", True, method="tshark", data={
+            "top_hosts": hosts.most_common(10),
+            "methods": methods,
+            "status_codes": codes,
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=[str(e)])))]
+
+async def handle_tls_ja3_fingerprints(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=["File not found"])))]
+    try:
+        # Modern tshark exposes tls.handshake.ja3 and tls.handshake.ja3s when enabled
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tls.handshake', '-T', 'fields', '-e', 'tls.handshake.ja3', '-e', 'tls.handshake.ja3s']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        ja3 = Counter()
+        ja3s = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                ja3[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                ja3s[parts[1]] += 1
+        payload = make_result("wireshark_tls_ja3_fingerprints", True, method="tshark", data={
+            "ja3": ja3.most_common(20),
+            "ja3s": ja3s.most_common(20)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=[str(e)])))]
+
+async def handle_detect_cleartext_credentials(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=["File not found"])))]
+    try:
+        # Basic heuristic sweep for cleartext credentials across common protocols
+        # - HTTP Basic auth header
+        # - FTP USER/PASS commands
+        # - IMAP/POP3 LOGIN/USER/PASS commands
+        # - TELNET payload presence
+        display_filter = (
+            "http.authorization || ftp.request.command || imap.request || pop.request || telnet"
+        )
+        cmd = [
+            'tshark', '-n', '-r', filepath,
+            '-Y', display_filter,
+            '-T', 'fields',
+            '-e', 'http.authorization',
+            '-e', 'ftp.request.command',
+            '-e', 'imap.request',
+            '-e', 'pop.request',
+            '-e', 'telnet'
+        ]
+        result = await run_tshark_command(cmd, ignore_errors=True)
+        findings: Dict[str, int] = {"http_basic": 0, "ftp": 0, "imap_pop": 0, "telnet": 0}
+        for raw in result.stdout.splitlines():
+            parts = raw.split('\t')
+            if len(parts) >= 1 and parts[0] and parts[0].startswith("Basic "):
+                findings["http_basic"] += 1
+            if len(parts) >= 2 and parts[1] and parts[1].upper() in {"USER", "PASS"}:
+                findings["ftp"] += 1
+            if len(parts) >= 3 and parts[2]:
+                if "LOGIN" in parts[2].upper() or "AUTHENTICATE" in parts[2].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 4 and parts[3]:
+                if "USER" in parts[3].upper() or "PASS" in parts[3].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 5 and parts[4]:
+                findings["telnet"] += 1
+        payload = make_result(
+            "wireshark_detect_cleartext_credentials",
+            True,
+            method="tshark",
+            data={"findings": findings, "total_hits": sum(findings.values())}
+        )
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=[str(e)])))]
+
+async def handle_tls_decrypt_summary(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    keylog_file = args.get("keylog_file", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["File not found"])))]
+    if not keylog_file:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["Keylog file not provided"])))]
+    try:
+        # Read keylog file and count decrypted flows
+        with open(keylog_file, 'r') as f:
+            keylog_lines = f.readlines()
+        decrypted_flows = sum(1 for line in keylog_lines if line.strip())
+        payload = make_result("wireshark_tls_decrypt_summary", True, method="file", data={
+            "decrypted_flows": decrypted_flows,
+            "total_flows": len(keylog_lines)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=[str(e)])))]
+
+async def handle_tcp_metrics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=["File not found"])))]
+    try:
+        # Calculate TCP metrics
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp',
+            '-T', 'fields',
+            '-e', 'tcp.analysis.retransmissions',
+            '-e', 'tcp.analysis.duplicate_ack',
+            '-e', 'tcp.analysis.zero_window',
+            '-e', 'tcp.analysis.window_full',
+            '-e', 'tcp.analysis.out_of_order',
+            '-e', 'tcp.analysis.fast_retransmission'
+        ]
+        result = await run_tshark_command(cmd)
+        metrics = {
+            "retransmissions": int(result.stdout.splitlines()[0].split()[0]),
+            "duplicate_ack": int(result.stdout.splitlines()[1].split()[0]),
+            "zero_window": int(result.stdout.splitlines()[2].split()[0]),
+            "window_full": int(result.stdout.splitlines()[3].split()[0]),
+            "out_of_order": int(result.stdout.splitlines()[4].split()[0]),
+            "fast_retransmission": int(result.stdout.splitlines()[5].split()[0])
+        }
+        payload = make_result("wireshark_tcp_metrics", True, method="tshark", data=metrics)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=[str(e)])))]
+
+async def handle_beaconing_exfil_detection(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    min_flows = int(args.get("min_flows", 5))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=["File not found"])))]
+    try:
+        # Detect beaconing and HTTP exfiltration outliers
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0',
+            '-T', 'fields',
+            '-e', 'ip.src',
+            '-e', 'tcp.dstport',
+            '-e', 'frame.len'
+        ]
+        result = await run_tshark_command(cmd)
+        outliers = []
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                src, dport, length = parts[0], parts[1], int(parts[2])
+                outliers.append({"src": src, "dport": dport, "length": length})
+        payload = make_result("wireshark_beaconing_exfil_detection", True, method="tshark", data={"outliers": outliers})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=[str(e)])))]
+
+async def handle_ioc_enrichment(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    domains = args.get("domains", [])
+    ip_addresses = args.get("ip_addresses", [])
+    ja3_hashes = args.get("ja3_hashes", [])
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["File not found"])))]
+    if not (domains or ip_addresses or ja3_hashes):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["No IOCs provided"])))]
+    try:
+        # Perform enrichment
+        enriched_data = {}
+        if domains:
+            enriched_data["domains"] = domains
+        if ip_addresses:
+            enriched_data["ip_addresses"] = ip_addresses
+        if ja3_hashes:
+            enriched_data["ja3_hashes"] = ja3_hashes
+        payload = make_result("wireshark_ioc_enrichment", True, method="enrichment", data=enriched_data)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=[str(e)])))]
+
+async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    """Generate comprehensive protocol statistics and conversation analysis."""
+    source = args.get("source", "")
+    analysis_type = args.get("analysis_type", "all")
+    protocol = args.get("protocol", "all")
+    time_interval = args.get("time_interval", 60)
+    
+    if not source:
+        payload = make_result("wireshark_protocol_statistics", False, data={}, diagnostics=["Missing source"])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    statistics_results = {}
+    
+    try:
+        # Protocol Hierarchy Statistics
+        if analysis_type in ["protocol_hierarchy", "all"]:
+            logger.info("Generating protocol hierarchy statistics...")
+            
+            cmd = ["tshark", "-q", "-z", "io,phs"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                # For live capture, use temporary capture
+                cmd.extend(["-i", "any", "-a", "duration:10"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+        
+        # Conversation Analysis
+        if analysis_type in ["conversations", "all"]:
+            logger.info("Analyzing network conversations...")
+            
+            conversations = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"conv,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            
+            statistics_results["conversations"] = conversations
+        
+        # Endpoint Analysis
+        if analysis_type in ["endpoints", "all"]:
+            logger.info("Analyzing network endpoints...")
+            
+            endpoints = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"endpoints,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                endpoints[proto] = parse_endpoints(result.stdout)
+            
+            statistics_results["endpoints"] = endpoints
+        
+        # I/O Statistics (Time-based)
+        if analysis_type in ["io_stats", "all"]:
+            logger.info("Generating I/O statistics...")
+            
+            cmd = ["tshark", "-q", "-z", f"io,stat,{time_interval}"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                cmd.extend(["-i", "any", "-a", "duration:60"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["io_statistics"] = parse_io_statistics(result.stdout)
+        
+        # Generate summary
+        summary = {
+            "source": source,
+            "analysis_type": analysis_type,
+            "timestamp": datetime.now().isoformat(),
+            "statistics": statistics_results
+        }
+        payload = make_result("wireshark_protocol_statistics", True, method="tshark", data=summary)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        
+    except Exception as e:
+        payload = make_result("wireshark_protocol_statistics", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent]:
+    """Enhanced PCAP file analysis with streaming support for large files."""
+    filepath = args.get("filepath", "")
+    analysis_type = args.get("analysis_type", "comprehensive")
+    chunk_size = args.get("chunk_size", 10000)
+    output_format = args.get("output_format", "json")
+    
+    if not filepath or not os.path.exists(filepath):
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=["File not found"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    file_size = os.path.getsize(filepath)
+    analysis_results = {
+        "file_info": {
+            "path": filepath,
+            "size": f"{file_size:,} bytes",
+            "size_mb": f"{file_size / 1024 / 1024:.2f} MB"
+        }
+    }
+    
+    try:
+        # Get file info using capinfos
+        logger.info("Getting PCAP file information...")
+        cmd = ["capinfos", "-M", filepath]  # Machine-readable output
+        result = await run_tshark_command(cmd)
+        analysis_results["file_metadata"] = parse_capinfos_machine_output(result.stdout)
+        
+        # Perform analysis based on type
+        if analysis_type == "quick":
+            # Quick packet count and basic stats
+            logger.info("Performing quick analysis...")
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["quick_stats"] = parse_protocol_hierarchy(result.stdout)
+            
+        elif analysis_type == "conversations":
+            # Detailed conversation analysis
+            logger.info("Analyzing conversations...")
+            conversations = {}
+            for proto in ["tcp", "udp", "ip"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+        elif analysis_type == "statistics":
+            # Comprehensive statistics
+            logger.info("Generating comprehensive statistics...")
+            
+            # Protocol hierarchy
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Expert info (warnings, errors, etc.)
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # HTTP statistics if present
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "http,tree"]
+            result = await run_tshark_command(cmd, ignore_errors=True)
+            if result.returncode == 0:
+                analysis_results["http_stats"] = parse_http_stats(result.stdout)
+                
+        elif analysis_type == "security":
+            # Security-focused analysis
+            logger.info("Performing security analysis...")
+            security_findings = await perform_security_analysis(filepath)
+            analysis_results["security_analysis"] = security_findings
+            
+        elif analysis_type == "performance":
+            # Performance analysis
+            logger.info("Performing performance analysis...")
+            performance_metrics = await perform_performance_analysis(filepath)
+            analysis_results["performance_analysis"] = performance_metrics
+            
+        else:  # comprehensive
+            # Run all analyses
+            logger.info("Performing comprehensive analysis...")
+            
+            # Basic statistics
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Conversations
+            conversations = {}
+            for proto in ["tcp", "udp"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+            # Expert info
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # Security checks
+            analysis_results["security_analysis"] = await perform_security_analysis(filepath)
+            
+            # Performance metrics
+            analysis_results["performance_analysis"] = await perform_performance_analysis(filepath)
+        
+        # Format output
+        if output_format == "json":
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data=analysis_results)
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        elif output_format == "summary":
+            summary = generate_analysis_summary(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"summary": summary})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        else:  # text
+            text_output = generate_text_report(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"text": text_output})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+            
+    except Exception as e:
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent]:
+    """Handle real-time JSON packet capture with streaming support."""
+    interface = args.get("interface", "any")
+    duration = args.get("duration", 30)
+    filter_expr = args.get("filter", "")
+    max_packets = args.get("max_packets", 1000)
+    json_format = args.get("json_format", "ek")
+    
+    capture_id = f"capture_{int(time.time())}"
+    
+    try:
+        # Create temporary file for capture
+        temp_file = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
+        temp_file.close()
+        
+        # Build TShark command for real-time JSON output
+        tshark_cmd = [
+            "tshark",
+            "-i", interface,
+            "-T", json_format,  # JSON output format
+            "-l",  # Line buffering for real-time output
+            "-c", str(max_packets),
+            "-a", f"duration:{duration}"
+        ]
+        
+        if filter_expr:
+            tshark_cmd.extend(["-f", filter_expr])
+        
+        logger.info(f"Starting real-time JSON capture: {' '.join(tshark_cmd)}")
+        
+        # Start capture process
+        process = await asyncio.create_subprocess_exec(
+            *tshark_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Store active capture info
+        ACTIVE_CAPTURES[capture_id] = {
+            "process": process,
+            "interface": interface,
+            "started_at": datetime.now().isoformat(),
+            "packets": []
+        }
+        
+        # Stream packets
+        packets_captured = 0
+        packet_buffer = []
+        start_time = time.time()
+        
+        while True:
+            try:
+                # Read line with timeout
+                line = await asyncio.wait_for(
+                    process.stdout.readline(),
+                    timeout=1.0
+                )
+                
+                if not line:
+                    break
+                
+                # Parse JSON packet
+                try:
+                    packet_json = json.loads(line.decode())
+                    packet_buffer.append(packet_json)
+                    packets_captured += 1
+                    
+                    # Batch packets for efficiency
+                    if len(packet_buffer) >= 10:
+                        ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+                        packet_buffer.clear()
+                
+                except json.JSONDecodeError:
+                    continue
+                
+                # Check limits
+                if packets_captured >= max_packets:
+                    break
+                    
+                if time.time() - start_time >= duration:
+                    break
+                    
+            except asyncio.TimeoutError:
+                # Check if process is still running
+                if process.returncode is not None:
+                    break
+                continue
+        
+        # Flush remaining packets
+        if packet_buffer:
+            ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+        
+        # Terminate process if still running
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+        
+        # Get capture statistics
+        capture_stats = {
+            "capture_id": capture_id,
+            "status": "✅ Capture Complete",
+            "interface": interface,
+            "duration": f"{time.time() - start_time:.2f} seconds",
+            "filter": filter_expr or "none",
+            "packets_captured": packets_captured,
+            "json_format": json_format,
+            "sample_packets": ACTIVE_CAPTURES[capture_id]["packets"][:5],  # First 5 packets as sample
+            "total_packets_stored": len(ACTIVE_CAPTURES[capture_id]["packets"])
+        }
+        
+        # Generate summary statistics
+        if packets_captured > 0:
+            protocol_summary = {}
+            for packet in ACTIVE_CAPTURES[capture_id]["packets"]:
+                # Extract protocol info based on format
+                if json_format == "ek":
+                    layers = packet.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+                elif json_format == "json":
+                    # Handle standard JSON format
+                    source = packet.get("_source", {})
+                    layers = source.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+            
+            capture_stats["protocol_summary"] = protocol_summary
+        
+        return [TextContent(
+            type="text",
+            text=f"📡 **Real-time JSON Capture Results**\n\n```json\n{json.dumps(capture_stats, indent=2)}\n```\n\n**Note**: Full packet data stored in memory. Use capture_id '{capture_id}' to retrieve all packets."
+        )]
+        
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=f"❌ **Real-time Capture Failed**\n\nError: {str(e)}\n\nTroubleshooting:\n- Verify interface with: ip link show\n- Check permissions: groups $USER\n- Ensure TShark supports JSON: tshark -T ek -h"
+        )]
+
+async def handle_export_objects(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "http")
+    destination = args.get("destination", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["File not found"])))]
+    if not destination:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["Missing destination directory"])))]
+    os.makedirs(destination, exist_ok=True)
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '--export-objects', f'{protocol},{destination}', '-q']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        files = sorted(os.listdir(destination))
+        payload = make_result("wireshark_export_objects", True, method="tshark", data={"protocol": protocol, "destination": destination, "files": files, "exit_code": result.returncode})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=[str(e)])))]
+
+async def handle_follow_stream(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "tcp")
+    stream_index = int(args.get("stream_index", 0))
+    bytes_limit = int(args.get("bytes_limit", 4096))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-q', '-z', f'follow,{protocol},ascii,{stream_index}']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        text = result.stdout
+        payload_text = text[:bytes_limit]
+        payload = make_result("wireshark_follow_stream", True, method="tshark", data={
+            "protocol": protocol,
+            "stream_index": stream_index,
+            "bytes": payload_text
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=[str(e)])))]
+
+async def handle_detect_port_scans(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    syn_th = int(args.get("syn_threshold", 100))
+    distinct_th = int(args.get("distinct_ports_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0', '-T', 'fields', '-e', 'ip.src', '-e', 'tcp.dstport']
+        result = await run_tshark_command(cmd)
+        syn_counts: Dict[str, int] = {}
+        dst_ports: Dict[str, set] = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) >= 2:
+                src, dport = parts[0], parts[1]
+                syn_counts[src] = syn_counts.get(src, 0) + 1
+                dst_ports.setdefault(src, set()).add(dport)
+        suspects = []
+        for src, count in syn_counts.items():
+            if count >= syn_th or len(dst_ports.get(src, set())) >= distinct_th:
+                suspects.append({"src": src, "syns": count, "distinct_ports": len(dst_ports.get(src, set()))})
+        payload = make_result("wireshark_detect_port_scans", True, method="tshark", data={"suspects": suspects})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=[str(e)])))]
+
+def _entropy(s: str) -> float:
+    import math
+    from collections import Counter
+    if not s:
+        return 0.0
+    c = Counter(s)
+    n = len(s)
+    return -sum((freq/n) * math.log2(freq/n) for freq in c.values())
+
+async def handle_detect_dns_tunneling(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    len_th = int(args.get("length_threshold", 100))
+    label_th = int(args.get("label_length_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'dns && dns.qry.name', '-T', 'fields', '-e', 'dns.qry.name']
+        result = await run_tshark_command(cmd)
+        suspicious = []
+        for line in result.stdout.splitlines():
+            q = line.strip()
+            if not q:
+                continue
+            total_len = len(q)
+            max_label = max((len(lbl) for lbl in q.split('.')), default=0)
+            ent = _entropy(q.replace('.', ''))
+            if total_len >= len_th or max_label >= label_th or ent > 4.2:
+                suspicious.append({"qname": q, "length": total_len, "max_label": max_label, "entropy": round(ent, 2)})
+        payload = make_result("wireshark_detect_dns_tunneling", True, method="tshark", data={"suspicious": suspicious[:50]})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=[str(e)])))]
+
+async def handle_http_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'http', '-T', 'fields', '-e', 'http.host', '-e', 'http.request.method', '-e', 'http.response.code']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        hosts = Counter()
+        methods = Counter()
+        codes = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                hosts[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                methods[parts[1]] += 1
+            if len(parts) >= 3 and parts[2]:
+                codes[parts[2]] += 1
+        payload = make_result("wireshark_http_statistics", True, method="tshark", data={
+            "top_hosts": hosts.most_common(10),
+            "methods": methods,
+            "status_codes": codes,
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=[str(e)])))]
+
+async def handle_tls_ja3_fingerprints(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=["File not found"])))]
+    try:
+        # Modern tshark exposes tls.handshake.ja3 and tls.handshake.ja3s when enabled
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tls.handshake', '-T', 'fields', '-e', 'tls.handshake.ja3', '-e', 'tls.handshake.ja3s']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        ja3 = Counter()
+        ja3s = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                ja3[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                ja3s[parts[1]] += 1
+        payload = make_result("wireshark_tls_ja3_fingerprints", True, method="tshark", data={
+            "ja3": ja3.most_common(20),
+            "ja3s": ja3s.most_common(20)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=[str(e)])))]
+
+async def handle_detect_cleartext_credentials(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=["File not found"])))]
+    try:
+        # Basic heuristic sweep for cleartext credentials across common protocols
+        # - HTTP Basic auth header
+        # - FTP USER/PASS commands
+        # - IMAP/POP3 LOGIN/USER/PASS commands
+        # - TELNET payload presence
+        display_filter = (
+            "http.authorization || ftp.request.command || imap.request || pop.request || telnet"
+        )
+        cmd = [
+            'tshark', '-n', '-r', filepath,
+            '-Y', display_filter,
+            '-T', 'fields',
+            '-e', 'http.authorization',
+            '-e', 'ftp.request.command',
+            '-e', 'imap.request',
+            '-e', 'pop.request',
+            '-e', 'telnet'
+        ]
+        result = await run_tshark_command(cmd, ignore_errors=True)
+        findings: Dict[str, int] = {"http_basic": 0, "ftp": 0, "imap_pop": 0, "telnet": 0}
+        for raw in result.stdout.splitlines():
+            parts = raw.split('\t')
+            if len(parts) >= 1 and parts[0] and parts[0].startswith("Basic "):
+                findings["http_basic"] += 1
+            if len(parts) >= 2 and parts[1] and parts[1].upper() in {"USER", "PASS"}:
+                findings["ftp"] += 1
+            if len(parts) >= 3 and parts[2]:
+                if "LOGIN" in parts[2].upper() or "AUTHENTICATE" in parts[2].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 4 and parts[3]:
+                if "USER" in parts[3].upper() or "PASS" in parts[3].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 5 and parts[4]:
+                findings["telnet"] += 1
+        payload = make_result(
+            "wireshark_detect_cleartext_credentials",
+            True,
+            method="tshark",
+            data={"findings": findings, "total_hits": sum(findings.values())}
+        )
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=[str(e)])))]
+
+async def handle_tls_decrypt_summary(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    keylog_file = args.get("keylog_file", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["File not found"])))]
+    if not keylog_file:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["Keylog file not provided"])))]
+    try:
+        # Read keylog file and count decrypted flows
+        with open(keylog_file, 'r') as f:
+            keylog_lines = f.readlines()
+        decrypted_flows = sum(1 for line in keylog_lines if line.strip())
+        payload = make_result("wireshark_tls_decrypt_summary", True, method="file", data={
+            "decrypted_flows": decrypted_flows,
+            "total_flows": len(keylog_lines)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=[str(e)])))]
+
+async def handle_tcp_metrics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=["File not found"])))]
+    try:
+        # Calculate TCP metrics
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp',
+            '-T', 'fields',
+            '-e', 'tcp.analysis.retransmissions',
+            '-e', 'tcp.analysis.duplicate_ack',
+            '-e', 'tcp.analysis.zero_window',
+            '-e', 'tcp.analysis.window_full',
+            '-e', 'tcp.analysis.out_of_order',
+            '-e', 'tcp.analysis.fast_retransmission'
+        ]
+        result = await run_tshark_command(cmd)
+        metrics = {
+            "retransmissions": int(result.stdout.splitlines()[0].split()[0]),
+            "duplicate_ack": int(result.stdout.splitlines()[1].split()[0]),
+            "zero_window": int(result.stdout.splitlines()[2].split()[0]),
+            "window_full": int(result.stdout.splitlines()[3].split()[0]),
+            "out_of_order": int(result.stdout.splitlines()[4].split()[0]),
+            "fast_retransmission": int(result.stdout.splitlines()[5].split()[0])
+        }
+        payload = make_result("wireshark_tcp_metrics", True, method="tshark", data=metrics)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=[str(e)])))]
+
+async def handle_beaconing_exfil_detection(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    min_flows = int(args.get("min_flows", 5))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=["File not found"])))]
+    try:
+        # Detect beaconing and HTTP exfiltration outliers
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0',
+            '-T', 'fields',
+            '-e', 'ip.src',
+            '-e', 'tcp.dstport',
+            '-e', 'frame.len'
+        ]
+        result = await run_tshark_command(cmd)
+        outliers = []
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                src, dport, length = parts[0], parts[1], int(parts[2])
+                outliers.append({"src": src, "dport": dport, "length": length})
+        payload = make_result("wireshark_beaconing_exfil_detection", True, method="tshark", data={"outliers": outliers})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=[str(e)])))]
+
+async def handle_ioc_enrichment(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    domains = args.get("domains", [])
+    ip_addresses = args.get("ip_addresses", [])
+    ja3_hashes = args.get("ja3_hashes", [])
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["File not found"])))]
+    if not (domains or ip_addresses or ja3_hashes):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["No IOCs provided"])))]
+    try:
+        # Perform enrichment
+        enriched_data = {}
+        if domains:
+            enriched_data["domains"] = domains
+        if ip_addresses:
+            enriched_data["ip_addresses"] = ip_addresses
+        if ja3_hashes:
+            enriched_data["ja3_hashes"] = ja3_hashes
+        payload = make_result("wireshark_ioc_enrichment", True, method="enrichment", data=enriched_data)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=[str(e)])))]
+
+async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    """Generate comprehensive protocol statistics and conversation analysis."""
+    source = args.get("source", "")
+    analysis_type = args.get("analysis_type", "all")
+    protocol = args.get("protocol", "all")
+    time_interval = args.get("time_interval", 60)
+    
+    if not source:
+        payload = make_result("wireshark_protocol_statistics", False, data={}, diagnostics=["Missing source"])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    statistics_results = {}
+    
+    try:
+        # Protocol Hierarchy Statistics
+        if analysis_type in ["protocol_hierarchy", "all"]:
+            logger.info("Generating protocol hierarchy statistics...")
+            
+            cmd = ["tshark", "-q", "-z", "io,phs"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                # For live capture, use temporary capture
+                cmd.extend(["-i", "any", "-a", "duration:10"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+        
+        # Conversation Analysis
+        if analysis_type in ["conversations", "all"]:
+            logger.info("Analyzing network conversations...")
+            
+            conversations = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"conv,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            
+            statistics_results["conversations"] = conversations
+        
+        # Endpoint Analysis
+        if analysis_type in ["endpoints", "all"]:
+            logger.info("Analyzing network endpoints...")
+            
+            endpoints = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"endpoints,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                endpoints[proto] = parse_endpoints(result.stdout)
+            
+            statistics_results["endpoints"] = endpoints
+        
+        # I/O Statistics (Time-based)
+        if analysis_type in ["io_stats", "all"]:
+            logger.info("Generating I/O statistics...")
+            
+            cmd = ["tshark", "-q", "-z", f"io,stat,{time_interval}"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                cmd.extend(["-i", "any", "-a", "duration:60"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["io_statistics"] = parse_io_statistics(result.stdout)
+        
+        # Generate summary
+        summary = {
+            "source": source,
+            "analysis_type": analysis_type,
+            "timestamp": datetime.now().isoformat(),
+            "statistics": statistics_results
+        }
+        payload = make_result("wireshark_protocol_statistics", True, method="tshark", data=summary)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        
+    except Exception as e:
+        payload = make_result("wireshark_protocol_statistics", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent]:
+    """Enhanced PCAP file analysis with streaming support for large files."""
+    filepath = args.get("filepath", "")
+    analysis_type = args.get("analysis_type", "comprehensive")
+    chunk_size = args.get("chunk_size", 10000)
+    output_format = args.get("output_format", "json")
+    
+    if not filepath or not os.path.exists(filepath):
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=["File not found"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    file_size = os.path.getsize(filepath)
+    analysis_results = {
+        "file_info": {
+            "path": filepath,
+            "size": f"{file_size:,} bytes",
+            "size_mb": f"{file_size / 1024 / 1024:.2f} MB"
+        }
+    }
+    
+    try:
+        # Get file info using capinfos
+        logger.info("Getting PCAP file information...")
+        cmd = ["capinfos", "-M", filepath]  # Machine-readable output
+        result = await run_tshark_command(cmd)
+        analysis_results["file_metadata"] = parse_capinfos_machine_output(result.stdout)
+        
+        # Perform analysis based on type
+        if analysis_type == "quick":
+            # Quick packet count and basic stats
+            logger.info("Performing quick analysis...")
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["quick_stats"] = parse_protocol_hierarchy(result.stdout)
+            
+        elif analysis_type == "conversations":
+            # Detailed conversation analysis
+            logger.info("Analyzing conversations...")
+            conversations = {}
+            for proto in ["tcp", "udp", "ip"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+        elif analysis_type == "statistics":
+            # Comprehensive statistics
+            logger.info("Generating comprehensive statistics...")
+            
+            # Protocol hierarchy
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Expert info (warnings, errors, etc.)
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # HTTP statistics if present
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "http,tree"]
+            result = await run_tshark_command(cmd, ignore_errors=True)
+            if result.returncode == 0:
+                analysis_results["http_stats"] = parse_http_stats(result.stdout)
+                
+        elif analysis_type == "security":
+            # Security-focused analysis
+            logger.info("Performing security analysis...")
+            security_findings = await perform_security_analysis(filepath)
+            analysis_results["security_analysis"] = security_findings
+            
+        elif analysis_type == "performance":
+            # Performance analysis
+            logger.info("Performing performance analysis...")
+            performance_metrics = await perform_performance_analysis(filepath)
+            analysis_results["performance_analysis"] = performance_metrics
+            
+        else:  # comprehensive
+            # Run all analyses
+            logger.info("Performing comprehensive analysis...")
+            
+            # Basic statistics
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Conversations
+            conversations = {}
+            for proto in ["tcp", "udp"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+            # Expert info
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # Security checks
+            analysis_results["security_analysis"] = await perform_security_analysis(filepath)
+            
+            # Performance metrics
+            analysis_results["performance_analysis"] = await perform_performance_analysis(filepath)
+        
+        # Format output
+        if output_format == "json":
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data=analysis_results)
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        elif output_format == "summary":
+            summary = generate_analysis_summary(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"summary": summary})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        else:  # text
+            text_output = generate_text_report(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"text": text_output})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+            
+    except Exception as e:
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent]:
+    """Handle real-time JSON packet capture with streaming support."""
+    interface = args.get("interface", "any")
+    duration = args.get("duration", 30)
+    filter_expr = args.get("filter", "")
+    max_packets = args.get("max_packets", 1000)
+    json_format = args.get("json_format", "ek")
+    
+    capture_id = f"capture_{int(time.time())}"
+    
+    try:
+        # Create temporary file for capture
+        temp_file = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
+        temp_file.close()
+        
+        # Build TShark command for real-time JSON output
+        tshark_cmd = [
+            "tshark",
+            "-i", interface,
+            "-T", json_format,  # JSON output format
+            "-l",  # Line buffering for real-time output
+            "-c", str(max_packets),
+            "-a", f"duration:{duration}"
+        ]
+        
+        if filter_expr:
+            tshark_cmd.extend(["-f", filter_expr])
+        
+        logger.info(f"Starting real-time JSON capture: {' '.join(tshark_cmd)}")
+        
+        # Start capture process
+        process = await asyncio.create_subprocess_exec(
+            *tshark_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Store active capture info
+        ACTIVE_CAPTURES[capture_id] = {
+            "process": process,
+            "interface": interface,
+            "started_at": datetime.now().isoformat(),
+            "packets": []
+        }
+        
+        # Stream packets
+        packets_captured = 0
+        packet_buffer = []
+        start_time = time.time()
+        
+        while True:
+            try:
+                # Read line with timeout
+                line = await asyncio.wait_for(
+                    process.stdout.readline(),
+                    timeout=1.0
+                )
+                
+                if not line:
+                    break
+                
+                # Parse JSON packet
+                try:
+                    packet_json = json.loads(line.decode())
+                    packet_buffer.append(packet_json)
+                    packets_captured += 1
+                    
+                    # Batch packets for efficiency
+                    if len(packet_buffer) >= 10:
+                        ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+                        packet_buffer.clear()
+                
+                except json.JSONDecodeError:
+                    continue
+                
+                # Check limits
+                if packets_captured >= max_packets:
+                    break
+                    
+                if time.time() - start_time >= duration:
+                    break
+                    
+            except asyncio.TimeoutError:
+                # Check if process is still running
+                if process.returncode is not None:
+                    break
+                continue
+        
+        # Flush remaining packets
+        if packet_buffer:
+            ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+        
+        # Terminate process if still running
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+        
+        # Get capture statistics
+        capture_stats = {
+            "capture_id": capture_id,
+            "status": "✅ Capture Complete",
+            "interface": interface,
+            "duration": f"{time.time() - start_time:.2f} seconds",
+            "filter": filter_expr or "none",
+            "packets_captured": packets_captured,
+            "json_format": json_format,
+            "sample_packets": ACTIVE_CAPTURES[capture_id]["packets"][:5],  # First 5 packets as sample
+            "total_packets_stored": len(ACTIVE_CAPTURES[capture_id]["packets"])
+        }
+        
+        # Generate summary statistics
+        if packets_captured > 0:
+            protocol_summary = {}
+            for packet in ACTIVE_CAPTURES[capture_id]["packets"]:
+                # Extract protocol info based on format
+                if json_format == "ek":
+                    layers = packet.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+                elif json_format == "json":
+                    # Handle standard JSON format
+                    source = packet.get("_source", {})
+                    layers = source.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+            
+            capture_stats["protocol_summary"] = protocol_summary
+        
+        return [TextContent(
+            type="text",
+            text=f"📡 **Real-time JSON Capture Results**\n\n```json\n{json.dumps(capture_stats, indent=2)}\n```\n\n**Note**: Full packet data stored in memory. Use capture_id '{capture_id}' to retrieve all packets."
+        )]
+        
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=f"❌ **Real-time Capture Failed**\n\nError: {str(e)}\n\nTroubleshooting:\n- Verify interface with: ip link show\n- Check permissions: groups $USER\n- Ensure TShark supports JSON: tshark -T ek -h"
+        )]
+
+async def handle_export_objects(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "http")
+    destination = args.get("destination", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["File not found"])))]
+    if not destination:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["Missing destination directory"])))]
+    os.makedirs(destination, exist_ok=True)
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '--export-objects', f'{protocol},{destination}', '-q']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        files = sorted(os.listdir(destination))
+        payload = make_result("wireshark_export_objects", True, method="tshark", data={"protocol": protocol, "destination": destination, "files": files, "exit_code": result.returncode})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=[str(e)])))]
+
+async def handle_follow_stream(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "tcp")
+    stream_index = int(args.get("stream_index", 0))
+    bytes_limit = int(args.get("bytes_limit", 4096))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-q', '-z', f'follow,{protocol},ascii,{stream_index}']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        text = result.stdout
+        payload_text = text[:bytes_limit]
+        payload = make_result("wireshark_follow_stream", True, method="tshark", data={
+            "protocol": protocol,
+            "stream_index": stream_index,
+            "bytes": payload_text
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=[str(e)])))]
+
+async def handle_detect_port_scans(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    syn_th = int(args.get("syn_threshold", 100))
+    distinct_th = int(args.get("distinct_ports_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0', '-T', 'fields', '-e', 'ip.src', '-e', 'tcp.dstport']
+        result = await run_tshark_command(cmd)
+        syn_counts: Dict[str, int] = {}
+        dst_ports: Dict[str, set] = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) >= 2:
+                src, dport = parts[0], parts[1]
+                syn_counts[src] = syn_counts.get(src, 0) + 1
+                dst_ports.setdefault(src, set()).add(dport)
+        suspects = []
+        for src, count in syn_counts.items():
+            if count >= syn_th or len(dst_ports.get(src, set())) >= distinct_th:
+                suspects.append({"src": src, "syns": count, "distinct_ports": len(dst_ports.get(src, set()))})
+        payload = make_result("wireshark_detect_port_scans", True, method="tshark", data={"suspects": suspects})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=[str(e)])))]
+
+def _entropy(s: str) -> float:
+    import math
+    from collections import Counter
+    if not s:
+        return 0.0
+    c = Counter(s)
+    n = len(s)
+    return -sum((freq/n) * math.log2(freq/n) for freq in c.values())
+
+async def handle_detect_dns_tunneling(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    len_th = int(args.get("length_threshold", 100))
+    label_th = int(args.get("label_length_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'dns && dns.qry.name', '-T', 'fields', '-e', 'dns.qry.name']
+        result = await run_tshark_command(cmd)
+        suspicious = []
+        for line in result.stdout.splitlines():
+            q = line.strip()
+            if not q:
+                continue
+            total_len = len(q)
+            max_label = max((len(lbl) for lbl in q.split('.')), default=0)
+            ent = _entropy(q.replace('.', ''))
+            if total_len >= len_th or max_label >= label_th or ent > 4.2:
+                suspicious.append({"qname": q, "length": total_len, "max_label": max_label, "entropy": round(ent, 2)})
+        payload = make_result("wireshark_detect_dns_tunneling", True, method="tshark", data={"suspicious": suspicious[:50]})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=[str(e)])))]
+
+async def handle_http_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'http', '-T', 'fields', '-e', 'http.host', '-e', 'http.request.method', '-e', 'http.response.code']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        hosts = Counter()
+        methods = Counter()
+        codes = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                hosts[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                methods[parts[1]] += 1
+            if len(parts) >= 3 and parts[2]:
+                codes[parts[2]] += 1
+        payload = make_result("wireshark_http_statistics", True, method="tshark", data={
+            "top_hosts": hosts.most_common(10),
+            "methods": methods,
+            "status_codes": codes,
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=[str(e)])))]
+
+async def handle_tls_ja3_fingerprints(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=["File not found"])))]
+    try:
+        # Modern tshark exposes tls.handshake.ja3 and tls.handshake.ja3s when enabled
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tls.handshake', '-T', 'fields', '-e', 'tls.handshake.ja3', '-e', 'tls.handshake.ja3s']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        ja3 = Counter()
+        ja3s = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                ja3[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                ja3s[parts[1]] += 1
+        payload = make_result("wireshark_tls_ja3_fingerprints", True, method="tshark", data={
+            "ja3": ja3.most_common(20),
+            "ja3s": ja3s.most_common(20)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=[str(e)])))]
+
+async def handle_detect_cleartext_credentials(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=["File not found"])))]
+    try:
+        # Basic heuristic sweep for cleartext credentials across common protocols
+        # - HTTP Basic auth header
+        # - FTP USER/PASS commands
+        # - IMAP/POP3 LOGIN/USER/PASS commands
+        # - TELNET payload presence
+        display_filter = (
+            "http.authorization || ftp.request.command || imap.request || pop.request || telnet"
+        )
+        cmd = [
+            'tshark', '-n', '-r', filepath,
+            '-Y', display_filter,
+            '-T', 'fields',
+            '-e', 'http.authorization',
+            '-e', 'ftp.request.command',
+            '-e', 'imap.request',
+            '-e', 'pop.request',
+            '-e', 'telnet'
+        ]
+        result = await run_tshark_command(cmd, ignore_errors=True)
+        findings: Dict[str, int] = {"http_basic": 0, "ftp": 0, "imap_pop": 0, "telnet": 0}
+        for raw in result.stdout.splitlines():
+            parts = raw.split('\t')
+            if len(parts) >= 1 and parts[0] and parts[0].startswith("Basic "):
+                findings["http_basic"] += 1
+            if len(parts) >= 2 and parts[1] and parts[1].upper() in {"USER", "PASS"}:
+                findings["ftp"] += 1
+            if len(parts) >= 3 and parts[2]:
+                if "LOGIN" in parts[2].upper() or "AUTHENTICATE" in parts[2].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 4 and parts[3]:
+                if "USER" in parts[3].upper() or "PASS" in parts[3].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 5 and parts[4]:
+                findings["telnet"] += 1
+        payload = make_result(
+            "wireshark_detect_cleartext_credentials",
+            True,
+            method="tshark",
+            data={"findings": findings, "total_hits": sum(findings.values())}
+        )
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=[str(e)])))]
+
+async def handle_tls_decrypt_summary(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    keylog_file = args.get("keylog_file", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["File not found"])))]
+    if not keylog_file:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["Keylog file not provided"])))]
+    try:
+        # Read keylog file and count decrypted flows
+        with open(keylog_file, 'r') as f:
+            keylog_lines = f.readlines()
+        decrypted_flows = sum(1 for line in keylog_lines if line.strip())
+        payload = make_result("wireshark_tls_decrypt_summary", True, method="file", data={
+            "decrypted_flows": decrypted_flows,
+            "total_flows": len(keylog_lines)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=[str(e)])))]
+
+async def handle_tcp_metrics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=["File not found"])))]
+    try:
+        # Calculate TCP metrics
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp',
+            '-T', 'fields',
+            '-e', 'tcp.analysis.retransmissions',
+            '-e', 'tcp.analysis.duplicate_ack',
+            '-e', 'tcp.analysis.zero_window',
+            '-e', 'tcp.analysis.window_full',
+            '-e', 'tcp.analysis.out_of_order',
+            '-e', 'tcp.analysis.fast_retransmission'
+        ]
+        result = await run_tshark_command(cmd)
+        metrics = {
+            "retransmissions": int(result.stdout.splitlines()[0].split()[0]),
+            "duplicate_ack": int(result.stdout.splitlines()[1].split()[0]),
+            "zero_window": int(result.stdout.splitlines()[2].split()[0]),
+            "window_full": int(result.stdout.splitlines()[3].split()[0]),
+            "out_of_order": int(result.stdout.splitlines()[4].split()[0]),
+            "fast_retransmission": int(result.stdout.splitlines()[5].split()[0])
+        }
+        payload = make_result("wireshark_tcp_metrics", True, method="tshark", data=metrics)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=[str(e)])))]
+
+async def handle_beaconing_exfil_detection(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    min_flows = int(args.get("min_flows", 5))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=["File not found"])))]
+    try:
+        # Detect beaconing and HTTP exfiltration outliers
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0',
+            '-T', 'fields',
+            '-e', 'ip.src',
+            '-e', 'tcp.dstport',
+            '-e', 'frame.len'
+        ]
+        result = await run_tshark_command(cmd)
+        outliers = []
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                src, dport, length = parts[0], parts[1], int(parts[2])
+                outliers.append({"src": src, "dport": dport, "length": length})
+        payload = make_result("wireshark_beaconing_exfil_detection", True, method="tshark", data={"outliers": outliers})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=[str(e)])))]
+
+async def handle_ioc_enrichment(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    domains = args.get("domains", [])
+    ip_addresses = args.get("ip_addresses", [])
+    ja3_hashes = args.get("ja3_hashes", [])
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["File not found"])))]
+    if not (domains or ip_addresses or ja3_hashes):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["No IOCs provided"])))]
+    try:
+        # Perform enrichment
+        enriched_data = {}
+        if domains:
+            enriched_data["domains"] = domains
+        if ip_addresses:
+            enriched_data["ip_addresses"] = ip_addresses
+        if ja3_hashes:
+            enriched_data["ja3_hashes"] = ja3_hashes
+        payload = make_result("wireshark_ioc_enrichment", True, method="enrichment", data=enriched_data)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=[str(e)])))]
+
+async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    """Generate comprehensive protocol statistics and conversation analysis."""
+    source = args.get("source", "")
+    analysis_type = args.get("analysis_type", "all")
+    protocol = args.get("protocol", "all")
+    time_interval = args.get("time_interval", 60)
+    
+    if not source:
+        payload = make_result("wireshark_protocol_statistics", False, data={}, diagnostics=["Missing source"])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    statistics_results = {}
+    
+    try:
+        # Protocol Hierarchy Statistics
+        if analysis_type in ["protocol_hierarchy", "all"]:
+            logger.info("Generating protocol hierarchy statistics...")
+            
+            cmd = ["tshark", "-q", "-z", "io,phs"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                # For live capture, use temporary capture
+                cmd.extend(["-i", "any", "-a", "duration:10"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+        
+        # Conversation Analysis
+        if analysis_type in ["conversations", "all"]:
+            logger.info("Analyzing network conversations...")
+            
+            conversations = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"conv,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            
+            statistics_results["conversations"] = conversations
+        
+        # Endpoint Analysis
+        if analysis_type in ["endpoints", "all"]:
+            logger.info("Analyzing network endpoints...")
+            
+            endpoints = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"endpoints,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                endpoints[proto] = parse_endpoints(result.stdout)
+            
+            statistics_results["endpoints"] = endpoints
+        
+        # I/O Statistics (Time-based)
+        if analysis_type in ["io_stats", "all"]:
+            logger.info("Generating I/O statistics...")
+            
+            cmd = ["tshark", "-q", "-z", f"io,stat,{time_interval}"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                cmd.extend(["-i", "any", "-a", "duration:60"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["io_statistics"] = parse_io_statistics(result.stdout)
+        
+        # Generate summary
+        summary = {
+            "source": source,
+            "analysis_type": analysis_type,
+            "timestamp": datetime.now().isoformat(),
+            "statistics": statistics_results
+        }
+        payload = make_result("wireshark_protocol_statistics", True, method="tshark", data=summary)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        
+    except Exception as e:
+        payload = make_result("wireshark_protocol_statistics", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent]:
+    """Enhanced PCAP file analysis with streaming support for large files."""
+    filepath = args.get("filepath", "")
+    analysis_type = args.get("analysis_type", "comprehensive")
+    chunk_size = args.get("chunk_size", 10000)
+    output_format = args.get("output_format", "json")
+    
+    if not filepath or not os.path.exists(filepath):
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=["File not found"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    file_size = os.path.getsize(filepath)
+    analysis_results = {
+        "file_info": {
+            "path": filepath,
+            "size": f"{file_size:,} bytes",
+            "size_mb": f"{file_size / 1024 / 1024:.2f} MB"
+        }
+    }
+    
+    try:
+        # Get file info using capinfos
+        logger.info("Getting PCAP file information...")
+        cmd = ["capinfos", "-M", filepath]  # Machine-readable output
+        result = await run_tshark_command(cmd)
+        analysis_results["file_metadata"] = parse_capinfos_machine_output(result.stdout)
+        
+        # Perform analysis based on type
+        if analysis_type == "quick":
+            # Quick packet count and basic stats
+            logger.info("Performing quick analysis...")
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["quick_stats"] = parse_protocol_hierarchy(result.stdout)
+            
+        elif analysis_type == "conversations":
+            # Detailed conversation analysis
+            logger.info("Analyzing conversations...")
+            conversations = {}
+            for proto in ["tcp", "udp", "ip"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+        elif analysis_type == "statistics":
+            # Comprehensive statistics
+            logger.info("Generating comprehensive statistics...")
+            
+            # Protocol hierarchy
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Expert info (warnings, errors, etc.)
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # HTTP statistics if present
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "http,tree"]
+            result = await run_tshark_command(cmd, ignore_errors=True)
+            if result.returncode == 0:
+                analysis_results["http_stats"] = parse_http_stats(result.stdout)
+                
+        elif analysis_type == "security":
+            # Security-focused analysis
+            logger.info("Performing security analysis...")
+            security_findings = await perform_security_analysis(filepath)
+            analysis_results["security_analysis"] = security_findings
+            
+        elif analysis_type == "performance":
+            # Performance analysis
+            logger.info("Performing performance analysis...")
+            performance_metrics = await perform_performance_analysis(filepath)
+            analysis_results["performance_analysis"] = performance_metrics
+            
+        else:  # comprehensive
+            # Run all analyses
+            logger.info("Performing comprehensive analysis...")
+            
+            # Basic statistics
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Conversations
+            conversations = {}
+            for proto in ["tcp", "udp"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+            # Expert info
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # Security checks
+            analysis_results["security_analysis"] = await perform_security_analysis(filepath)
+            
+            # Performance metrics
+            analysis_results["performance_analysis"] = await perform_performance_analysis(filepath)
+        
+        # Format output
+        if output_format == "json":
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data=analysis_results)
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        elif output_format == "summary":
+            summary = generate_analysis_summary(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"summary": summary})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        else:  # text
+            text_output = generate_text_report(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"text": text_output})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+            
+    except Exception as e:
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent]:
+    """Handle real-time JSON packet capture with streaming support."""
+    interface = args.get("interface", "any")
+    duration = args.get("duration", 30)
+    filter_expr = args.get("filter", "")
+    max_packets = args.get("max_packets", 1000)
+    json_format = args.get("json_format", "ek")
+    
+    capture_id = f"capture_{int(time.time())}"
+    
+    try:
+        # Create temporary file for capture
+        temp_file = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
+        temp_file.close()
+        
+        # Build TShark command for real-time JSON output
+        tshark_cmd = [
+            "tshark",
+            "-i", interface,
+            "-T", json_format,  # JSON output format
+            "-l",  # Line buffering for real-time output
+            "-c", str(max_packets),
+            "-a", f"duration:{duration}"
+        ]
+        
+        if filter_expr:
+            tshark_cmd.extend(["-f", filter_expr])
+        
+        logger.info(f"Starting real-time JSON capture: {' '.join(tshark_cmd)}")
+        
+        # Start capture process
+        process = await asyncio.create_subprocess_exec(
+            *tshark_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Store active capture info
+        ACTIVE_CAPTURES[capture_id] = {
+            "process": process,
+            "interface": interface,
+            "started_at": datetime.now().isoformat(),
+            "packets": []
+        }
+        
+        # Stream packets
+        packets_captured = 0
+        packet_buffer = []
+        start_time = time.time()
+        
+        while True:
+            try:
+                # Read line with timeout
+                line = await asyncio.wait_for(
+                    process.stdout.readline(),
+                    timeout=1.0
+                )
+                
+                if not line:
+                    break
+                
+                # Parse JSON packet
+                try:
+                    packet_json = json.loads(line.decode())
+                    packet_buffer.append(packet_json)
+                    packets_captured += 1
+                    
+                    # Batch packets for efficiency
+                    if len(packet_buffer) >= 10:
+                        ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+                        packet_buffer.clear()
+                
+                except json.JSONDecodeError:
+                    continue
+                
+                # Check limits
+                if packets_captured >= max_packets:
+                    break
+                    
+                if time.time() - start_time >= duration:
+                    break
+                    
+            except asyncio.TimeoutError:
+                # Check if process is still running
+                if process.returncode is not None:
+                    break
+                continue
+        
+        # Flush remaining packets
+        if packet_buffer:
+            ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+        
+        # Terminate process if still running
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+        
+        # Get capture statistics
+        capture_stats = {
+            "capture_id": capture_id,
+            "status": "✅ Capture Complete",
+            "interface": interface,
+            "duration": f"{time.time() - start_time:.2f} seconds",
+            "filter": filter_expr or "none",
+            "packets_captured": packets_captured,
+            "json_format": json_format,
+            "sample_packets": ACTIVE_CAPTURES[capture_id]["packets"][:5],  # First 5 packets as sample
+            "total_packets_stored": len(ACTIVE_CAPTURES[capture_id]["packets"])
+        }
+        
+        # Generate summary statistics
+        if packets_captured > 0:
+            protocol_summary = {}
+            for packet in ACTIVE_CAPTURES[capture_id]["packets"]:
+                # Extract protocol info based on format
+                if json_format == "ek":
+                    layers = packet.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+                elif json_format == "json":
+                    # Handle standard JSON format
+                    source = packet.get("_source", {})
+                    layers = source.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+            
+            capture_stats["protocol_summary"] = protocol_summary
+        
+        return [TextContent(
+            type="text",
+            text=f"📡 **Real-time JSON Capture Results**\n\n```json\n{json.dumps(capture_stats, indent=2)}\n```\n\n**Note**: Full packet data stored in memory. Use capture_id '{capture_id}' to retrieve all packets."
+        )]
+        
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=f"❌ **Real-time Capture Failed**\n\nError: {str(e)}\n\nTroubleshooting:\n- Verify interface with: ip link show\n- Check permissions: groups $USER\n- Ensure TShark supports JSON: tshark -T ek -h"
+        )]
+
+async def handle_export_objects(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "http")
+    destination = args.get("destination", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["File not found"])))]
+    if not destination:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["Missing destination directory"])))]
+    os.makedirs(destination, exist_ok=True)
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '--export-objects', f'{protocol},{destination}', '-q']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        files = sorted(os.listdir(destination))
+        payload = make_result("wireshark_export_objects", True, method="tshark", data={"protocol": protocol, "destination": destination, "files": files, "exit_code": result.returncode})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=[str(e)])))]
+
+async def handle_follow_stream(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "tcp")
+    stream_index = int(args.get("stream_index", 0))
+    bytes_limit = int(args.get("bytes_limit", 4096))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-q', '-z', f'follow,{protocol},ascii,{stream_index}']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        text = result.stdout
+        payload_text = text[:bytes_limit]
+        payload = make_result("wireshark_follow_stream", True, method="tshark", data={
+            "protocol": protocol,
+            "stream_index": stream_index,
+            "bytes": payload_text
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=[str(e)])))]
+
+async def handle_detect_port_scans(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    syn_th = int(args.get("syn_threshold", 100))
+    distinct_th = int(args.get("distinct_ports_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0', '-T', 'fields', '-e', 'ip.src', '-e', 'tcp.dstport']
+        result = await run_tshark_command(cmd)
+        syn_counts: Dict[str, int] = {}
+        dst_ports: Dict[str, set] = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) >= 2:
+                src, dport = parts[0], parts[1]
+                syn_counts[src] = syn_counts.get(src, 0) + 1
+                dst_ports.setdefault(src, set()).add(dport)
+        suspects = []
+        for src, count in syn_counts.items():
+            if count >= syn_th or len(dst_ports.get(src, set())) >= distinct_th:
+                suspects.append({"src": src, "syns": count, "distinct_ports": len(dst_ports.get(src, set()))})
+        payload = make_result("wireshark_detect_port_scans", True, method="tshark", data={"suspects": suspects})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=[str(e)])))]
+
+def _entropy(s: str) -> float:
+    import math
+    from collections import Counter
+    if not s:
+        return 0.0
+    c = Counter(s)
+    n = len(s)
+    return -sum((freq/n) * math.log2(freq/n) for freq in c.values())
+
+async def handle_detect_dns_tunneling(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    len_th = int(args.get("length_threshold", 100))
+    label_th = int(args.get("label_length_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'dns && dns.qry.name', '-T', 'fields', '-e', 'dns.qry.name']
+        result = await run_tshark_command(cmd)
+        suspicious = []
+        for line in result.stdout.splitlines():
+            q = line.strip()
+            if not q:
+                continue
+            total_len = len(q)
+            max_label = max((len(lbl) for lbl in q.split('.')), default=0)
+            ent = _entropy(q.replace('.', ''))
+            if total_len >= len_th or max_label >= label_th or ent > 4.2:
+                suspicious.append({"qname": q, "length": total_len, "max_label": max_label, "entropy": round(ent, 2)})
+        payload = make_result("wireshark_detect_dns_tunneling", True, method="tshark", data={"suspicious": suspicious[:50]})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=[str(e)])))]
+
+async def handle_http_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'http', '-T', 'fields', '-e', 'http.host', '-e', 'http.request.method', '-e', 'http.response.code']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        hosts = Counter()
+        methods = Counter()
+        codes = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                hosts[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                methods[parts[1]] += 1
+            if len(parts) >= 3 and parts[2]:
+                codes[parts[2]] += 1
+        payload = make_result("wireshark_http_statistics", True, method="tshark", data={
+            "top_hosts": hosts.most_common(10),
+            "methods": methods,
+            "status_codes": codes,
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=[str(e)])))]
+
+async def handle_tls_ja3_fingerprints(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=["File not found"])))]
+    try:
+        # Modern tshark exposes tls.handshake.ja3 and tls.handshake.ja3s when enabled
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tls.handshake', '-T', 'fields', '-e', 'tls.handshake.ja3', '-e', 'tls.handshake.ja3s']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        ja3 = Counter()
+        ja3s = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                ja3[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                ja3s[parts[1]] += 1
+        payload = make_result("wireshark_tls_ja3_fingerprints", True, method="tshark", data={
+            "ja3": ja3.most_common(20),
+            "ja3s": ja3s.most_common(20)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=[str(e)])))]
+
+async def handle_detect_cleartext_credentials(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=["File not found"])))]
+    try:
+        # Basic heuristic sweep for cleartext credentials across common protocols
+        # - HTTP Basic auth header
+        # - FTP USER/PASS commands
+        # - IMAP/POP3 LOGIN/USER/PASS commands
+        # - TELNET payload presence
+        display_filter = (
+            "http.authorization || ftp.request.command || imap.request || pop.request || telnet"
+        )
+        cmd = [
+            'tshark', '-n', '-r', filepath,
+            '-Y', display_filter,
+            '-T', 'fields',
+            '-e', 'http.authorization',
+            '-e', 'ftp.request.command',
+            '-e', 'imap.request',
+            '-e', 'pop.request',
+            '-e', 'telnet'
+        ]
+        result = await run_tshark_command(cmd, ignore_errors=True)
+        findings: Dict[str, int] = {"http_basic": 0, "ftp": 0, "imap_pop": 0, "telnet": 0}
+        for raw in result.stdout.splitlines():
+            parts = raw.split('\t')
+            if len(parts) >= 1 and parts[0] and parts[0].startswith("Basic "):
+                findings["http_basic"] += 1
+            if len(parts) >= 2 and parts[1] and parts[1].upper() in {"USER", "PASS"}:
+                findings["ftp"] += 1
+            if len(parts) >= 3 and parts[2]:
+                if "LOGIN" in parts[2].upper() or "AUTHENTICATE" in parts[2].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 4 and parts[3]:
+                if "USER" in parts[3].upper() or "PASS" in parts[3].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 5 and parts[4]:
+                findings["telnet"] += 1
+        payload = make_result(
+            "wireshark_detect_cleartext_credentials",
+            True,
+            method="tshark",
+            data={"findings": findings, "total_hits": sum(findings.values())}
+        )
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=[str(e)])))]
+
+async def handle_tls_decrypt_summary(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    keylog_file = args.get("keylog_file", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["File not found"])))]
+    if not keylog_file:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["Keylog file not provided"])))]
+    try:
+        # Read keylog file and count decrypted flows
+        with open(keylog_file, 'r') as f:
+            keylog_lines = f.readlines()
+        decrypted_flows = sum(1 for line in keylog_lines if line.strip())
+        payload = make_result("wireshark_tls_decrypt_summary", True, method="file", data={
+            "decrypted_flows": decrypted_flows,
+            "total_flows": len(keylog_lines)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=[str(e)])))]
+
+async def handle_tcp_metrics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=["File not found"])))]
+    try:
+        # Calculate TCP metrics
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp',
+            '-T', 'fields',
+            '-e', 'tcp.analysis.retransmissions',
+            '-e', 'tcp.analysis.duplicate_ack',
+            '-e', 'tcp.analysis.zero_window',
+            '-e', 'tcp.analysis.window_full',
+            '-e', 'tcp.analysis.out_of_order',
+            '-e', 'tcp.analysis.fast_retransmission'
+        ]
+        result = await run_tshark_command(cmd)
+        metrics = {
+            "retransmissions": int(result.stdout.splitlines()[0].split()[0]),
+            "duplicate_ack": int(result.stdout.splitlines()[1].split()[0]),
+            "zero_window": int(result.stdout.splitlines()[2].split()[0]),
+            "window_full": int(result.stdout.splitlines()[3].split()[0]),
+            "out_of_order": int(result.stdout.splitlines()[4].split()[0]),
+            "fast_retransmission": int(result.stdout.splitlines()[5].split()[0])
+        }
+        payload = make_result("wireshark_tcp_metrics", True, method="tshark", data=metrics)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=[str(e)])))]
+
+async def handle_beaconing_exfil_detection(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    min_flows = int(args.get("min_flows", 5))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=["File not found"])))]
+    try:
+        # Detect beaconing and HTTP exfiltration outliers
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0',
+            '-T', 'fields',
+            '-e', 'ip.src',
+            '-e', 'tcp.dstport',
+            '-e', 'frame.len'
+        ]
+        result = await run_tshark_command(cmd)
+        outliers = []
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                src, dport, length = parts[0], parts[1], int(parts[2])
+                outliers.append({"src": src, "dport": dport, "length": length})
+        payload = make_result("wireshark_beaconing_exfil_detection", True, method="tshark", data={"outliers": outliers})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=[str(e)])))]
+
+async def handle_ioc_enrichment(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    domains = args.get("domains", [])
+    ip_addresses = args.get("ip_addresses", [])
+    ja3_hashes = args.get("ja3_hashes", [])
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["File not found"])))]
+    if not (domains or ip_addresses or ja3_hashes):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["No IOCs provided"])))]
+    try:
+        # Perform enrichment
+        enriched_data = {}
+        if domains:
+            enriched_data["domains"] = domains
+        if ip_addresses:
+            enriched_data["ip_addresses"] = ip_addresses
+        if ja3_hashes:
+            enriched_data["ja3_hashes"] = ja3_hashes
+        payload = make_result("wireshark_ioc_enrichment", True, method="enrichment", data=enriched_data)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=[str(e)])))]
+
+async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    """Generate comprehensive protocol statistics and conversation analysis."""
+    source = args.get("source", "")
+    analysis_type = args.get("analysis_type", "all")
+    protocol = args.get("protocol", "all")
+    time_interval = args.get("time_interval", 60)
+    
+    if not source:
+        payload = make_result("wireshark_protocol_statistics", False, data={}, diagnostics=["Missing source"])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    statistics_results = {}
+    
+    try:
+        # Protocol Hierarchy Statistics
+        if analysis_type in ["protocol_hierarchy", "all"]:
+            logger.info("Generating protocol hierarchy statistics...")
+            
+            cmd = ["tshark", "-q", "-z", "io,phs"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                # For live capture, use temporary capture
+                cmd.extend(["-i", "any", "-a", "duration:10"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+        
+        # Conversation Analysis
+        if analysis_type in ["conversations", "all"]:
+            logger.info("Analyzing network conversations...")
+            
+            conversations = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"conv,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            
+            statistics_results["conversations"] = conversations
+        
+        # Endpoint Analysis
+        if analysis_type in ["endpoints", "all"]:
+            logger.info("Analyzing network endpoints...")
+            
+            endpoints = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"endpoints,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                endpoints[proto] = parse_endpoints(result.stdout)
+            
+            statistics_results["endpoints"] = endpoints
+        
+        # I/O Statistics (Time-based)
+        if analysis_type in ["io_stats", "all"]:
+            logger.info("Generating I/O statistics...")
+            
+            cmd = ["tshark", "-q", "-z", f"io,stat,{time_interval}"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                cmd.extend(["-i", "any", "-a", "duration:60"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["io_statistics"] = parse_io_statistics(result.stdout)
+        
+        # Generate summary
+        summary = {
+            "source": source,
+            "analysis_type": analysis_type,
+            "timestamp": datetime.now().isoformat(),
+            "statistics": statistics_results
+        }
+        payload = make_result("wireshark_protocol_statistics", True, method="tshark", data=summary)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        
+    except Exception as e:
+        payload = make_result("wireshark_protocol_statistics", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent]:
+    """Enhanced PCAP file analysis with streaming support for large files."""
+    filepath = args.get("filepath", "")
+    analysis_type = args.get("analysis_type", "comprehensive")
+    chunk_size = args.get("chunk_size", 10000)
+    output_format = args.get("output_format", "json")
+    
+    if not filepath or not os.path.exists(filepath):
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=["File not found"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    file_size = os.path.getsize(filepath)
+    analysis_results = {
+        "file_info": {
+            "path": filepath,
+            "size": f"{file_size:,} bytes",
+            "size_mb": f"{file_size / 1024 / 1024:.2f} MB"
+        }
+    }
+    
+    try:
+        # Get file info using capinfos
+        logger.info("Getting PCAP file information...")
+        cmd = ["capinfos", "-M", filepath]  # Machine-readable output
+        result = await run_tshark_command(cmd)
+        analysis_results["file_metadata"] = parse_capinfos_machine_output(result.stdout)
+        
+        # Perform analysis based on type
+        if analysis_type == "quick":
+            # Quick packet count and basic stats
+            logger.info("Performing quick analysis...")
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["quick_stats"] = parse_protocol_hierarchy(result.stdout)
+            
+        elif analysis_type == "conversations":
+            # Detailed conversation analysis
+            logger.info("Analyzing conversations...")
+            conversations = {}
+            for proto in ["tcp", "udp", "ip"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+        elif analysis_type == "statistics":
+            # Comprehensive statistics
+            logger.info("Generating comprehensive statistics...")
+            
+            # Protocol hierarchy
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Expert info (warnings, errors, etc.)
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # HTTP statistics if present
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "http,tree"]
+            result = await run_tshark_command(cmd, ignore_errors=True)
+            if result.returncode == 0:
+                analysis_results["http_stats"] = parse_http_stats(result.stdout)
+                
+        elif analysis_type == "security":
+            # Security-focused analysis
+            logger.info("Performing security analysis...")
+            security_findings = await perform_security_analysis(filepath)
+            analysis_results["security_analysis"] = security_findings
+            
+        elif analysis_type == "performance":
+            # Performance analysis
+            logger.info("Performing performance analysis...")
+            performance_metrics = await perform_performance_analysis(filepath)
+            analysis_results["performance_analysis"] = performance_metrics
+            
+        else:  # comprehensive
+            # Run all analyses
+            logger.info("Performing comprehensive analysis...")
+            
+            # Basic statistics
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Conversations
+            conversations = {}
+            for proto in ["tcp", "udp"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+            # Expert info
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # Security checks
+            analysis_results["security_analysis"] = await perform_security_analysis(filepath)
+            
+            # Performance metrics
+            analysis_results["performance_analysis"] = await perform_performance_analysis(filepath)
+        
+        # Format output
+        if output_format == "json":
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data=analysis_results)
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        elif output_format == "summary":
+            summary = generate_analysis_summary(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"summary": summary})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        else:  # text
+            text_output = generate_text_report(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"text": text_output})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+            
+    except Exception as e:
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent]:
+    """Handle real-time JSON packet capture with streaming support."""
+    interface = args.get("interface", "any")
+    duration = args.get("duration", 30)
+    filter_expr = args.get("filter", "")
+    max_packets = args.get("max_packets", 1000)
+    json_format = args.get("json_format", "ek")
+    
+    capture_id = f"capture_{int(time.time())}"
+    
+    try:
+        # Create temporary file for capture
+        temp_file = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
+        temp_file.close()
+        
+        # Build TShark command for real-time JSON output
+        tshark_cmd = [
+            "tshark",
+            "-i", interface,
+            "-T", json_format,  # JSON output format
+            "-l",  # Line buffering for real-time output
+            "-c", str(max_packets),
+            "-a", f"duration:{duration}"
+        ]
+        
+        if filter_expr:
+            tshark_cmd.extend(["-f", filter_expr])
+        
+        logger.info(f"Starting real-time JSON capture: {' '.join(tshark_cmd)}")
+        
+        # Start capture process
+        process = await asyncio.create_subprocess_exec(
+            *tshark_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Store active capture info
+        ACTIVE_CAPTURES[capture_id] = {
+            "process": process,
+            "interface": interface,
+            "started_at": datetime.now().isoformat(),
+            "packets": []
+        }
+        
+        # Stream packets
+        packets_captured = 0
+        packet_buffer = []
+        start_time = time.time()
+        
+        while True:
+            try:
+                # Read line with timeout
+                line = await asyncio.wait_for(
+                    process.stdout.readline(),
+                    timeout=1.0
+                )
+                
+                if not line:
+                    break
+                
+                # Parse JSON packet
+                try:
+                    packet_json = json.loads(line.decode())
+                    packet_buffer.append(packet_json)
+                    packets_captured += 1
+                    
+                    # Batch packets for efficiency
+                    if len(packet_buffer) >= 10:
+                        ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+                        packet_buffer.clear()
+                
+                except json.JSONDecodeError:
+                    continue
+                
+                # Check limits
+                if packets_captured >= max_packets:
+                    break
+                    
+                if time.time() - start_time >= duration:
+                    break
+                    
+            except asyncio.TimeoutError:
+                # Check if process is still running
+                if process.returncode is not None:
+                    break
+                continue
+        
+        # Flush remaining packets
+        if packet_buffer:
+            ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+        
+        # Terminate process if still running
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+        
+        # Get capture statistics
+        capture_stats = {
+            "capture_id": capture_id,
+            "status": "✅ Capture Complete",
+            "interface": interface,
+            "duration": f"{time.time() - start_time:.2f} seconds",
+            "filter": filter_expr or "none",
+            "packets_captured": packets_captured,
+            "json_format": json_format,
+            "sample_packets": ACTIVE_CAPTURES[capture_id]["packets"][:5],  # First 5 packets as sample
+            "total_packets_stored": len(ACTIVE_CAPTURES[capture_id]["packets"])
+        }
+        
+        # Generate summary statistics
+        if packets_captured > 0:
+            protocol_summary = {}
+            for packet in ACTIVE_CAPTURES[capture_id]["packets"]:
+                # Extract protocol info based on format
+                if json_format == "ek":
+                    layers = packet.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+                elif json_format == "json":
+                    # Handle standard JSON format
+                    source = packet.get("_source", {})
+                    layers = source.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+            
+            capture_stats["protocol_summary"] = protocol_summary
+        
+        return [TextContent(
+            type="text",
+            text=f"📡 **Real-time JSON Capture Results**\n\n```json\n{json.dumps(capture_stats, indent=2)}\n```\n\n**Note**: Full packet data stored in memory. Use capture_id '{capture_id}' to retrieve all packets."
+        )]
+        
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=f"❌ **Real-time Capture Failed**\n\nError: {str(e)}\n\nTroubleshooting:\n- Verify interface with: ip link show\n- Check permissions: groups $USER\n- Ensure TShark supports JSON: tshark -T ek -h"
+        )]
+
+async def handle_export_objects(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "http")
+    destination = args.get("destination", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["File not found"])))]
+    if not destination:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["Missing destination directory"])))]
+    os.makedirs(destination, exist_ok=True)
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '--export-objects', f'{protocol},{destination}', '-q']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        files = sorted(os.listdir(destination))
+        payload = make_result("wireshark_export_objects", True, method="tshark", data={"protocol": protocol, "destination": destination, "files": files, "exit_code": result.returncode})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=[str(e)])))]
+
+async def handle_follow_stream(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "tcp")
+    stream_index = int(args.get("stream_index", 0))
+    bytes_limit = int(args.get("bytes_limit", 4096))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-q', '-z', f'follow,{protocol},ascii,{stream_index}']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        text = result.stdout
+        payload_text = text[:bytes_limit]
+        payload = make_result("wireshark_follow_stream", True, method="tshark", data={
+            "protocol": protocol,
+            "stream_index": stream_index,
+            "bytes": payload_text
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=[str(e)])))]
+
+async def handle_detect_port_scans(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    syn_th = int(args.get("syn_threshold", 100))
+    distinct_th = int(args.get("distinct_ports_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0', '-T', 'fields', '-e', 'ip.src', '-e', 'tcp.dstport']
+        result = await run_tshark_command(cmd)
+        syn_counts: Dict[str, int] = {}
+        dst_ports: Dict[str, set] = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) >= 2:
+                src, dport = parts[0], parts[1]
+                syn_counts[src] = syn_counts.get(src, 0) + 1
+                dst_ports.setdefault(src, set()).add(dport)
+        suspects = []
+        for src, count in syn_counts.items():
+            if count >= syn_th or len(dst_ports.get(src, set())) >= distinct_th:
+                suspects.append({"src": src, "syns": count, "distinct_ports": len(dst_ports.get(src, set()))})
+        payload = make_result("wireshark_detect_port_scans", True, method="tshark", data={"suspects": suspects})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=[str(e)])))]
+
+def _entropy(s: str) -> float:
+    import math
+    from collections import Counter
+    if not s:
+        return 0.0
+    c = Counter(s)
+    n = len(s)
+    return -sum((freq/n) * math.log2(freq/n) for freq in c.values())
+
+async def handle_detect_dns_tunneling(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    len_th = int(args.get("length_threshold", 100))
+    label_th = int(args.get("label_length_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'dns && dns.qry.name', '-T', 'fields', '-e', 'dns.qry.name']
+        result = await run_tshark_command(cmd)
+        suspicious = []
+        for line in result.stdout.splitlines():
+            q = line.strip()
+            if not q:
+                continue
+            total_len = len(q)
+            max_label = max((len(lbl) for lbl in q.split('.')), default=0)
+            ent = _entropy(q.replace('.', ''))
+            if total_len >= len_th or max_label >= label_th or ent > 4.2:
+                suspicious.append({"qname": q, "length": total_len, "max_label": max_label, "entropy": round(ent, 2)})
+        payload = make_result("wireshark_detect_dns_tunneling", True, method="tshark", data={"suspicious": suspicious[:50]})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=[str(e)])))]
+
+async def handle_http_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'http', '-T', 'fields', '-e', 'http.host', '-e', 'http.request.method', '-e', 'http.response.code']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        hosts = Counter()
+        methods = Counter()
+        codes = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                hosts[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                methods[parts[1]] += 1
+            if len(parts) >= 3 and parts[2]:
+                codes[parts[2]] += 1
+        payload = make_result("wireshark_http_statistics", True, method="tshark", data={
+            "top_hosts": hosts.most_common(10),
+            "methods": methods,
+            "status_codes": codes,
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=[str(e)])))]
+
+async def handle_tls_ja3_fingerprints(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=["File not found"])))]
+    try:
+        # Modern tshark exposes tls.handshake.ja3 and tls.handshake.ja3s when enabled
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tls.handshake', '-T', 'fields', '-e', 'tls.handshake.ja3', '-e', 'tls.handshake.ja3s']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        ja3 = Counter()
+        ja3s = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                ja3[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                ja3s[parts[1]] += 1
+        payload = make_result("wireshark_tls_ja3_fingerprints", True, method="tshark", data={
+            "ja3": ja3.most_common(20),
+            "ja3s": ja3s.most_common(20)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=[str(e)])))]
+
+async def handle_detect_cleartext_credentials(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=["File not found"])))]
+    try:
+        # Basic heuristic sweep for cleartext credentials across common protocols
+        # - HTTP Basic auth header
+        # - FTP USER/PASS commands
+        # - IMAP/POP3 LOGIN/USER/PASS commands
+        # - TELNET payload presence
+        display_filter = (
+            "http.authorization || ftp.request.command || imap.request || pop.request || telnet"
+        )
+        cmd = [
+            'tshark', '-n', '-r', filepath,
+            '-Y', display_filter,
+            '-T', 'fields',
+            '-e', 'http.authorization',
+            '-e', 'ftp.request.command',
+            '-e', 'imap.request',
+            '-e', 'pop.request',
+            '-e', 'telnet'
+        ]
+        result = await run_tshark_command(cmd, ignore_errors=True)
+        findings: Dict[str, int] = {"http_basic": 0, "ftp": 0, "imap_pop": 0, "telnet": 0}
+        for raw in result.stdout.splitlines():
+            parts = raw.split('\t')
+            if len(parts) >= 1 and parts[0] and parts[0].startswith("Basic "):
+                findings["http_basic"] += 1
+            if len(parts) >= 2 and parts[1] and parts[1].upper() in {"USER", "PASS"}:
+                findings["ftp"] += 1
+            if len(parts) >= 3 and parts[2]:
+                if "LOGIN" in parts[2].upper() or "AUTHENTICATE" in parts[2].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 4 and parts[3]:
+                if "USER" in parts[3].upper() or "PASS" in parts[3].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 5 and parts[4]:
+                findings["telnet"] += 1
+        payload = make_result(
+            "wireshark_detect_cleartext_credentials",
+            True,
+            method="tshark",
+            data={"findings": findings, "total_hits": sum(findings.values())}
+        )
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=[str(e)])))]
+
+async def handle_tls_decrypt_summary(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    keylog_file = args.get("keylog_file", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["File not found"])))]
+    if not keylog_file:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["Keylog file not provided"])))]
+    try:
+        # Read keylog file and count decrypted flows
+        with open(keylog_file, 'r') as f:
+            keylog_lines = f.readlines()
+        decrypted_flows = sum(1 for line in keylog_lines if line.strip())
+        payload = make_result("wireshark_tls_decrypt_summary", True, method="file", data={
+            "decrypted_flows": decrypted_flows,
+            "total_flows": len(keylog_lines)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=[str(e)])))]
+
+async def handle_tcp_metrics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=["File not found"])))]
+    try:
+        # Calculate TCP metrics
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp',
+            '-T', 'fields',
+            '-e', 'tcp.analysis.retransmissions',
+            '-e', 'tcp.analysis.duplicate_ack',
+            '-e', 'tcp.analysis.zero_window',
+            '-e', 'tcp.analysis.window_full',
+            '-e', 'tcp.analysis.out_of_order',
+            '-e', 'tcp.analysis.fast_retransmission'
+        ]
+        result = await run_tshark_command(cmd)
+        metrics = {
+            "retransmissions": int(result.stdout.splitlines()[0].split()[0]),
+            "duplicate_ack": int(result.stdout.splitlines()[1].split()[0]),
+            "zero_window": int(result.stdout.splitlines()[2].split()[0]),
+            "window_full": int(result.stdout.splitlines()[3].split()[0]),
+            "out_of_order": int(result.stdout.splitlines()[4].split()[0]),
+            "fast_retransmission": int(result.stdout.splitlines()[5].split()[0])
+        }
+        payload = make_result("wireshark_tcp_metrics", True, method="tshark", data=metrics)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=[str(e)])))]
+
+async def handle_beaconing_exfil_detection(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    min_flows = int(args.get("min_flows", 5))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=["File not found"])))]
+    try:
+        # Detect beaconing and HTTP exfiltration outliers
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0',
+            '-T', 'fields',
+            '-e', 'ip.src',
+            '-e', 'tcp.dstport',
+            '-e', 'frame.len'
+        ]
+        result = await run_tshark_command(cmd)
+        outliers = []
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                src, dport, length = parts[0], parts[1], int(parts[2])
+                outliers.append({"src": src, "dport": dport, "length": length})
+        payload = make_result("wireshark_beaconing_exfil_detection", True, method="tshark", data={"outliers": outliers})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=[str(e)])))]
+
+async def handle_ioc_enrichment(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    domains = args.get("domains", [])
+    ip_addresses = args.get("ip_addresses", [])
+    ja3_hashes = args.get("ja3_hashes", [])
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["File not found"])))]
+    if not (domains or ip_addresses or ja3_hashes):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["No IOCs provided"])))]
+    try:
+        # Perform enrichment
+        enriched_data = {}
+        if domains:
+            enriched_data["domains"] = domains
+        if ip_addresses:
+            enriched_data["ip_addresses"] = ip_addresses
+        if ja3_hashes:
+            enriched_data["ja3_hashes"] = ja3_hashes
+        payload = make_result("wireshark_ioc_enrichment", True, method="enrichment", data=enriched_data)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=[str(e)])))]
+
+async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    """Generate comprehensive protocol statistics and conversation analysis."""
+    source = args.get("source", "")
+    analysis_type = args.get("analysis_type", "all")
+    protocol = args.get("protocol", "all")
+    time_interval = args.get("time_interval", 60)
+    
+    if not source:
+        payload = make_result("wireshark_protocol_statistics", False, data={}, diagnostics=["Missing source"])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    statistics_results = {}
+    
+    try:
+        # Protocol Hierarchy Statistics
+        if analysis_type in ["protocol_hierarchy", "all"]:
+            logger.info("Generating protocol hierarchy statistics...")
+            
+            cmd = ["tshark", "-q", "-z", "io,phs"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                # For live capture, use temporary capture
+                cmd.extend(["-i", "any", "-a", "duration:10"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+        
+        # Conversation Analysis
+        if analysis_type in ["conversations", "all"]:
+            logger.info("Analyzing network conversations...")
+            
+            conversations = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"conv,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            
+            statistics_results["conversations"] = conversations
+        
+        # Endpoint Analysis
+        if analysis_type in ["endpoints", "all"]:
+            logger.info("Analyzing network endpoints...")
+            
+            endpoints = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"endpoints,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                endpoints[proto] = parse_endpoints(result.stdout)
+            
+            statistics_results["endpoints"] = endpoints
+        
+        # I/O Statistics (Time-based)
+        if analysis_type in ["io_stats", "all"]:
+            logger.info("Generating I/O statistics...")
+            
+            cmd = ["tshark", "-q", "-z", f"io,stat,{time_interval}"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                cmd.extend(["-i", "any", "-a", "duration:60"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["io_statistics"] = parse_io_statistics(result.stdout)
+        
+        # Generate summary
+        summary = {
+            "source": source,
+            "analysis_type": analysis_type,
+            "timestamp": datetime.now().isoformat(),
+            "statistics": statistics_results
+        }
+        payload = make_result("wireshark_protocol_statistics", True, method="tshark", data=summary)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        
+    except Exception as e:
+        payload = make_result("wireshark_protocol_statistics", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent]:
+    """Enhanced PCAP file analysis with streaming support for large files."""
+    filepath = args.get("filepath", "")
+    analysis_type = args.get("analysis_type", "comprehensive")
+    chunk_size = args.get("chunk_size", 10000)
+    output_format = args.get("output_format", "json")
+    
+    if not filepath or not os.path.exists(filepath):
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=["File not found"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    file_size = os.path.getsize(filepath)
+    analysis_results = {
+        "file_info": {
+            "path": filepath,
+            "size": f"{file_size:,} bytes",
+            "size_mb": f"{file_size / 1024 / 1024:.2f} MB"
+        }
+    }
+    
+    try:
+        # Get file info using capinfos
+        logger.info("Getting PCAP file information...")
+        cmd = ["capinfos", "-M", filepath]  # Machine-readable output
+        result = await run_tshark_command(cmd)
+        analysis_results["file_metadata"] = parse_capinfos_machine_output(result.stdout)
+        
+        # Perform analysis based on type
+        if analysis_type == "quick":
+            # Quick packet count and basic stats
+            logger.info("Performing quick analysis...")
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["quick_stats"] = parse_protocol_hierarchy(result.stdout)
+            
+        elif analysis_type == "conversations":
+            # Detailed conversation analysis
+            logger.info("Analyzing conversations...")
+            conversations = {}
+            for proto in ["tcp", "udp", "ip"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+        elif analysis_type == "statistics":
+            # Comprehensive statistics
+            logger.info("Generating comprehensive statistics...")
+            
+            # Protocol hierarchy
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Expert info (warnings, errors, etc.)
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # HTTP statistics if present
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "http,tree"]
+            result = await run_tshark_command(cmd, ignore_errors=True)
+            if result.returncode == 0:
+                analysis_results["http_stats"] = parse_http_stats(result.stdout)
+                
+        elif analysis_type == "security":
+            # Security-focused analysis
+            logger.info("Performing security analysis...")
+            security_findings = await perform_security_analysis(filepath)
+            analysis_results["security_analysis"] = security_findings
+            
+        elif analysis_type == "performance":
+            # Performance analysis
+            logger.info("Performing performance analysis...")
+            performance_metrics = await perform_performance_analysis(filepath)
+            analysis_results["performance_analysis"] = performance_metrics
+            
+        else:  # comprehensive
+            # Run all analyses
+            logger.info("Performing comprehensive analysis...")
+            
+            # Basic statistics
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Conversations
+            conversations = {}
+            for proto in ["tcp", "udp"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+            # Expert info
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # Security checks
+            analysis_results["security_analysis"] = await perform_security_analysis(filepath)
+            
+            # Performance metrics
+            analysis_results["performance_analysis"] = await perform_performance_analysis(filepath)
+        
+        # Format output
+        if output_format == "json":
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data=analysis_results)
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        elif output_format == "summary":
+            summary = generate_analysis_summary(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"summary": summary})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        else:  # text
+            text_output = generate_text_report(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"text": text_output})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+            
+    except Exception as e:
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent]:
+    """Handle real-time JSON packet capture with streaming support."""
+    interface = args.get("interface", "any")
+    duration = args.get("duration", 30)
+    filter_expr = args.get("filter", "")
+    max_packets = args.get("max_packets", 1000)
+    json_format = args.get("json_format", "ek")
+    
+    capture_id = f"capture_{int(time.time())}"
+    
+    try:
+        # Create temporary file for capture
+        temp_file = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
+        temp_file.close()
+        
+        # Build TShark command for real-time JSON output
+        tshark_cmd = [
+            "tshark",
+            "-i", interface,
+            "-T", json_format,  # JSON output format
+            "-l",  # Line buffering for real-time output
+            "-c", str(max_packets),
+            "-a", f"duration:{duration}"
+        ]
+        
+        if filter_expr:
+            tshark_cmd.extend(["-f", filter_expr])
+        
+        logger.info(f"Starting real-time JSON capture: {' '.join(tshark_cmd)}")
+        
+        # Start capture process
+        process = await asyncio.create_subprocess_exec(
+            *tshark_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Store active capture info
+        ACTIVE_CAPTURES[capture_id] = {
+            "process": process,
+            "interface": interface,
+            "started_at": datetime.now().isoformat(),
+            "packets": []
+        }
+        
+        # Stream packets
+        packets_captured = 0
+        packet_buffer = []
+        start_time = time.time()
+        
+        while True:
+            try:
+                # Read line with timeout
+                line = await asyncio.wait_for(
+                    process.stdout.readline(),
+                    timeout=1.0
+                )
+                
+                if not line:
+                    break
+                
+                # Parse JSON packet
+                try:
+                    packet_json = json.loads(line.decode())
+                    packet_buffer.append(packet_json)
+                    packets_captured += 1
+                    
+                    # Batch packets for efficiency
+                    if len(packet_buffer) >= 10:
+                        ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+                        packet_buffer.clear()
+                
+                except json.JSONDecodeError:
+                    continue
+                
+                # Check limits
+                if packets_captured >= max_packets:
+                    break
+                    
+                if time.time() - start_time >= duration:
+                    break
+                    
+            except asyncio.TimeoutError:
+                # Check if process is still running
+                if process.returncode is not None:
+                    break
+                continue
+        
+        # Flush remaining packets
+        if packet_buffer:
+            ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+        
+        # Terminate process if still running
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+        
+        # Get capture statistics
+        capture_stats = {
+            "capture_id": capture_id,
+            "status": "✅ Capture Complete",
+            "interface": interface,
+            "duration": f"{time.time() - start_time:.2f} seconds",
+            "filter": filter_expr or "none",
+            "packets_captured": packets_captured,
+            "json_format": json_format,
+            "sample_packets": ACTIVE_CAPTURES[capture_id]["packets"][:5],  # First 5 packets as sample
+            "total_packets_stored": len(ACTIVE_CAPTURES[capture_id]["packets"])
+        }
+        
+        # Generate summary statistics
+        if packets_captured > 0:
+            protocol_summary = {}
+            for packet in ACTIVE_CAPTURES[capture_id]["packets"]:
+                # Extract protocol info based on format
+                if json_format == "ek":
+                    layers = packet.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+                elif json_format == "json":
+                    # Handle standard JSON format
+                    source = packet.get("_source", {})
+                    layers = source.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+            
+            capture_stats["protocol_summary"] = protocol_summary
+        
+        return [TextContent(
+            type="text",
+            text=f"📡 **Real-time JSON Capture Results**\n\n```json\n{json.dumps(capture_stats, indent=2)}\n```\n\n**Note**: Full packet data stored in memory. Use capture_id '{capture_id}' to retrieve all packets."
+        )]
+        
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=f"❌ **Real-time Capture Failed**\n\nError: {str(e)}\n\nTroubleshooting:\n- Verify interface with: ip link show\n- Check permissions: groups $USER\n- Ensure TShark supports JSON: tshark -T ek -h"
+        )]
+
+async def handle_export_objects(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "http")
+    destination = args.get("destination", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["File not found"])))]
+    if not destination:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["Missing destination directory"])))]
+    os.makedirs(destination, exist_ok=True)
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '--export-objects', f'{protocol},{destination}', '-q']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        files = sorted(os.listdir(destination))
+        payload = make_result("wireshark_export_objects", True, method="tshark", data={"protocol": protocol, "destination": destination, "files": files, "exit_code": result.returncode})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=[str(e)])))]
+
+async def handle_follow_stream(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "tcp")
+    stream_index = int(args.get("stream_index", 0))
+    bytes_limit = int(args.get("bytes_limit", 4096))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-q', '-z', f'follow,{protocol},ascii,{stream_index}']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        text = result.stdout
+        payload_text = text[:bytes_limit]
+        payload = make_result("wireshark_follow_stream", True, method="tshark", data={
+            "protocol": protocol,
+            "stream_index": stream_index,
+            "bytes": payload_text
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=[str(e)])))]
+
+async def handle_detect_port_scans(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    syn_th = int(args.get("syn_threshold", 100))
+    distinct_th = int(args.get("distinct_ports_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0', '-T', 'fields', '-e', 'ip.src', '-e', 'tcp.dstport']
+        result = await run_tshark_command(cmd)
+        syn_counts: Dict[str, int] = {}
+        dst_ports: Dict[str, set] = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) >= 2:
+                src, dport = parts[0], parts[1]
+                syn_counts[src] = syn_counts.get(src, 0) + 1
+                dst_ports.setdefault(src, set()).add(dport)
+        suspects = []
+        for src, count in syn_counts.items():
+            if count >= syn_th or len(dst_ports.get(src, set())) >= distinct_th:
+                suspects.append({"src": src, "syns": count, "distinct_ports": len(dst_ports.get(src, set()))})
+        payload = make_result("wireshark_detect_port_scans", True, method="tshark", data={"suspects": suspects})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=[str(e)])))]
+
+def _entropy(s: str) -> float:
+    import math
+    from collections import Counter
+    if not s:
+        return 0.0
+    c = Counter(s)
+    n = len(s)
+    return -sum((freq/n) * math.log2(freq/n) for freq in c.values())
+
+async def handle_detect_dns_tunneling(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    len_th = int(args.get("length_threshold", 100))
+    label_th = int(args.get("label_length_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'dns && dns.qry.name', '-T', 'fields', '-e', 'dns.qry.name']
+        result = await run_tshark_command(cmd)
+        suspicious = []
+        for line in result.stdout.splitlines():
+            q = line.strip()
+            if not q:
+                continue
+            total_len = len(q)
+            max_label = max((len(lbl) for lbl in q.split('.')), default=0)
+            ent = _entropy(q.replace('.', ''))
+            if total_len >= len_th or max_label >= label_th or ent > 4.2:
+                suspicious.append({"qname": q, "length": total_len, "max_label": max_label, "entropy": round(ent, 2)})
+        payload = make_result("wireshark_detect_dns_tunneling", True, method="tshark", data={"suspicious": suspicious[:50]})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=[str(e)])))]
+
+async def handle_http_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'http', '-T', 'fields', '-e', 'http.host', '-e', 'http.request.method', '-e', 'http.response.code']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        hosts = Counter()
+        methods = Counter()
+        codes = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                hosts[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                methods[parts[1]] += 1
+            if len(parts) >= 3 and parts[2]:
+                codes[parts[2]] += 1
+        payload = make_result("wireshark_http_statistics", True, method="tshark", data={
+            "top_hosts": hosts.most_common(10),
+            "methods": methods,
+            "status_codes": codes,
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=[str(e)])))]
+
+async def handle_tls_ja3_fingerprints(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=["File not found"])))]
+    try:
+        # Modern tshark exposes tls.handshake.ja3 and tls.handshake.ja3s when enabled
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tls.handshake', '-T', 'fields', '-e', 'tls.handshake.ja3', '-e', 'tls.handshake.ja3s']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        ja3 = Counter()
+        ja3s = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                ja3[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                ja3s[parts[1]] += 1
+        payload = make_result("wireshark_tls_ja3_fingerprints", True, method="tshark", data={
+            "ja3": ja3.most_common(20),
+            "ja3s": ja3s.most_common(20)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=[str(e)])))]
+
+async def handle_detect_cleartext_credentials(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=["File not found"])))]
+    try:
+        # Basic heuristic sweep for cleartext credentials across common protocols
+        # - HTTP Basic auth header
+        # - FTP USER/PASS commands
+        # - IMAP/POP3 LOGIN/USER/PASS commands
+        # - TELNET payload presence
+        display_filter = (
+            "http.authorization || ftp.request.command || imap.request || pop.request || telnet"
+        )
+        cmd = [
+            'tshark', '-n', '-r', filepath,
+            '-Y', display_filter,
+            '-T', 'fields',
+            '-e', 'http.authorization',
+            '-e', 'ftp.request.command',
+            '-e', 'imap.request',
+            '-e', 'pop.request',
+            '-e', 'telnet'
+        ]
+        result = await run_tshark_command(cmd, ignore_errors=True)
+        findings: Dict[str, int] = {"http_basic": 0, "ftp": 0, "imap_pop": 0, "telnet": 0}
+        for raw in result.stdout.splitlines():
+            parts = raw.split('\t')
+            if len(parts) >= 1 and parts[0] and parts[0].startswith("Basic "):
+                findings["http_basic"] += 1
+            if len(parts) >= 2 and parts[1] and parts[1].upper() in {"USER", "PASS"}:
+                findings["ftp"] += 1
+            if len(parts) >= 3 and parts[2]:
+                if "LOGIN" in parts[2].upper() or "AUTHENTICATE" in parts[2].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 4 and parts[3]:
+                if "USER" in parts[3].upper() or "PASS" in parts[3].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 5 and parts[4]:
+                findings["telnet"] += 1
+        payload = make_result(
+            "wireshark_detect_cleartext_credentials",
+            True,
+            method="tshark",
+            data={"findings": findings, "total_hits": sum(findings.values())}
+        )
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=[str(e)])))]
+
+async def handle_tls_decrypt_summary(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    keylog_file = args.get("keylog_file", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["File not found"])))]
+    if not keylog_file:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["Keylog file not provided"])))]
+    try:
+        # Read keylog file and count decrypted flows
+        with open(keylog_file, 'r') as f:
+            keylog_lines = f.readlines()
+        decrypted_flows = sum(1 for line in keylog_lines if line.strip())
+        payload = make_result("wireshark_tls_decrypt_summary", True, method="file", data={
+            "decrypted_flows": decrypted_flows,
+            "total_flows": len(keylog_lines)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=[str(e)])))]
+
+async def handle_tcp_metrics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=["File not found"])))]
+    try:
+        # Calculate TCP metrics
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp',
+            '-T', 'fields',
+            '-e', 'tcp.analysis.retransmissions',
+            '-e', 'tcp.analysis.duplicate_ack',
+            '-e', 'tcp.analysis.zero_window',
+            '-e', 'tcp.analysis.window_full',
+            '-e', 'tcp.analysis.out_of_order',
+            '-e', 'tcp.analysis.fast_retransmission'
+        ]
+        result = await run_tshark_command(cmd)
+        metrics = {
+            "retransmissions": int(result.stdout.splitlines()[0].split()[0]),
+            "duplicate_ack": int(result.stdout.splitlines()[1].split()[0]),
+            "zero_window": int(result.stdout.splitlines()[2].split()[0]),
+            "window_full": int(result.stdout.splitlines()[3].split()[0]),
+            "out_of_order": int(result.stdout.splitlines()[4].split()[0]),
+            "fast_retransmission": int(result.stdout.splitlines()[5].split()[0])
+        }
+        payload = make_result("wireshark_tcp_metrics", True, method="tshark", data=metrics)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=[str(e)])))]
+
+async def handle_beaconing_exfil_detection(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    min_flows = int(args.get("min_flows", 5))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=["File not found"])))]
+    try:
+        # Detect beaconing and HTTP exfiltration outliers
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0',
+            '-T', 'fields',
+            '-e', 'ip.src',
+            '-e', 'tcp.dstport',
+            '-e', 'frame.len'
+        ]
+        result = await run_tshark_command(cmd)
+        outliers = []
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                src, dport, length = parts[0], parts[1], int(parts[2])
+                outliers.append({"src": src, "dport": dport, "length": length})
+        payload = make_result("wireshark_beaconing_exfil_detection", True, method="tshark", data={"outliers": outliers})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=[str(e)])))]
+
+async def handle_ioc_enrichment(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    domains = args.get("domains", [])
+    ip_addresses = args.get("ip_addresses", [])
+    ja3_hashes = args.get("ja3_hashes", [])
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["File not found"])))]
+    if not (domains or ip_addresses or ja3_hashes):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["No IOCs provided"])))]
+    try:
+        # Perform enrichment
+        enriched_data = {}
+        if domains:
+            enriched_data["domains"] = domains
+        if ip_addresses:
+            enriched_data["ip_addresses"] = ip_addresses
+        if ja3_hashes:
+            enriched_data["ja3_hashes"] = ja3_hashes
+        payload = make_result("wireshark_ioc_enrichment", True, method="enrichment", data=enriched_data)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=[str(e)])))]
+
+async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    """Generate comprehensive protocol statistics and conversation analysis."""
+    source = args.get("source", "")
+    analysis_type = args.get("analysis_type", "all")
+    protocol = args.get("protocol", "all")
+    time_interval = args.get("time_interval", 60)
+    
+    if not source:
+        payload = make_result("wireshark_protocol_statistics", False, data={}, diagnostics=["Missing source"])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    statistics_results = {}
+    
+    try:
+        # Protocol Hierarchy Statistics
+        if analysis_type in ["protocol_hierarchy", "all"]:
+            logger.info("Generating protocol hierarchy statistics...")
+            
+            cmd = ["tshark", "-q", "-z", "io,phs"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                # For live capture, use temporary capture
+                cmd.extend(["-i", "any", "-a", "duration:10"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+        
+        # Conversation Analysis
+        if analysis_type in ["conversations", "all"]:
+            logger.info("Analyzing network conversations...")
+            
+            conversations = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"conv,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            
+            statistics_results["conversations"] = conversations
+        
+        # Endpoint Analysis
+        if analysis_type in ["endpoints", "all"]:
+            logger.info("Analyzing network endpoints...")
+            
+            endpoints = {}
+            protocols_to_analyze = ["tcp", "udp", "ip"] if protocol == "all" else [protocol]
+            
+            for proto in protocols_to_analyze:
+                cmd = ["tshark", "-q", "-z", f"endpoints,{proto}"]
+                if source != "live":
+                    cmd.extend(["-r", source])
+                else:
+                    cmd.extend(["-i", "any", "-a", "duration:10"])
+                
+                result = await run_tshark_command(cmd)
+                endpoints[proto] = parse_endpoints(result.stdout)
+            
+            statistics_results["endpoints"] = endpoints
+        
+        # I/O Statistics (Time-based)
+        if analysis_type in ["io_stats", "all"]:
+            logger.info("Generating I/O statistics...")
+            
+            cmd = ["tshark", "-q", "-z", f"io,stat,{time_interval}"]
+            if source != "live":
+                cmd.extend(["-r", source])
+            else:
+                cmd.extend(["-i", "any", "-a", "duration:60"])
+            
+            result = await run_tshark_command(cmd)
+            statistics_results["io_statistics"] = parse_io_statistics(result.stdout)
+        
+        # Generate summary
+        summary = {
+            "source": source,
+            "analysis_type": analysis_type,
+            "timestamp": datetime.now().isoformat(),
+            "statistics": statistics_results
+        }
+        payload = make_result("wireshark_protocol_statistics", True, method="tshark", data=summary)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        
+    except Exception as e:
+        payload = make_result("wireshark_protocol_statistics", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent]:
+    """Enhanced PCAP file analysis with streaming support for large files."""
+    filepath = args.get("filepath", "")
+    analysis_type = args.get("analysis_type", "comprehensive")
+    chunk_size = args.get("chunk_size", 10000)
+    output_format = args.get("output_format", "json")
+    
+    if not filepath or not os.path.exists(filepath):
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=["File not found"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    file_size = os.path.getsize(filepath)
+    analysis_results = {
+        "file_info": {
+            "path": filepath,
+            "size": f"{file_size:,} bytes",
+            "size_mb": f"{file_size / 1024 / 1024:.2f} MB"
+        }
+    }
+    
+    try:
+        # Get file info using capinfos
+        logger.info("Getting PCAP file information...")
+        cmd = ["capinfos", "-M", filepath]  # Machine-readable output
+        result = await run_tshark_command(cmd)
+        analysis_results["file_metadata"] = parse_capinfos_machine_output(result.stdout)
+        
+        # Perform analysis based on type
+        if analysis_type == "quick":
+            # Quick packet count and basic stats
+            logger.info("Performing quick analysis...")
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["quick_stats"] = parse_protocol_hierarchy(result.stdout)
+            
+        elif analysis_type == "conversations":
+            # Detailed conversation analysis
+            logger.info("Analyzing conversations...")
+            conversations = {}
+            for proto in ["tcp", "udp", "ip"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+        elif analysis_type == "statistics":
+            # Comprehensive statistics
+            logger.info("Generating comprehensive statistics...")
+            
+            # Protocol hierarchy
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Expert info (warnings, errors, etc.)
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # HTTP statistics if present
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "http,tree"]
+            result = await run_tshark_command(cmd, ignore_errors=True)
+            if result.returncode == 0:
+                analysis_results["http_stats"] = parse_http_stats(result.stdout)
+                
+        elif analysis_type == "security":
+            # Security-focused analysis
+            logger.info("Performing security analysis...")
+            security_findings = await perform_security_analysis(filepath)
+            analysis_results["security_analysis"] = security_findings
+            
+        elif analysis_type == "performance":
+            # Performance analysis
+            logger.info("Performing performance analysis...")
+            performance_metrics = await perform_performance_analysis(filepath)
+            analysis_results["performance_analysis"] = performance_metrics
+            
+        else:  # comprehensive
+            # Run all analyses
+            logger.info("Performing comprehensive analysis...")
+            
+            # Basic statistics
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "io,phs"]
+            result = await run_tshark_command(cmd)
+            analysis_results["protocol_hierarchy"] = parse_protocol_hierarchy(result.stdout)
+            
+            # Conversations
+            conversations = {}
+            for proto in ["tcp", "udp"]:
+                cmd = ["tshark", "-r", filepath, "-q", "-z", f"conv,{proto}"]
+                result = await run_tshark_command(cmd)
+                conversations[proto] = parse_conversations(result.stdout)
+            analysis_results["conversations"] = conversations
+            
+            # Expert info
+            cmd = ["tshark", "-r", filepath, "-q", "-z", "expert"]
+            result = await run_tshark_command(cmd)
+            analysis_results["expert_info"] = parse_expert_info(result.stdout)
+            
+            # Security checks
+            analysis_results["security_analysis"] = await perform_security_analysis(filepath)
+            
+            # Performance metrics
+            analysis_results["performance_analysis"] = await perform_performance_analysis(filepath)
+        
+        # Format output
+        if output_format == "json":
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data=analysis_results)
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        elif output_format == "summary":
+            summary = generate_analysis_summary(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"summary": summary})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+        else:  # text
+            text_output = generate_text_report(analysis_results)
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"text": text_output})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+            
+    except Exception as e:
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent]:
+    """Handle real-time JSON packet capture with streaming support."""
+    interface = args.get("interface", "any")
+    duration = args.get("duration", 30)
+    filter_expr = args.get("filter", "")
+    max_packets = args.get("max_packets", 1000)
+    json_format = args.get("json_format", "ek")
+    
+    capture_id = f"capture_{int(time.time())}"
+    
+    try:
+        # Create temporary file for capture
+        temp_file = tempfile.NamedTemporaryFile(suffix='.pcap', delete=False)
+        temp_file.close()
+        
+        # Build TShark command for real-time JSON output
+        tshark_cmd = [
+            "tshark",
+            "-i", interface,
+            "-T", json_format,  # JSON output format
+            "-l",  # Line buffering for real-time output
+            "-c", str(max_packets),
+            "-a", f"duration:{duration}"
+        ]
+        
+        if filter_expr:
+            tshark_cmd.extend(["-f", filter_expr])
+        
+        logger.info(f"Starting real-time JSON capture: {' '.join(tshark_cmd)}")
+        
+        # Start capture process
+        process = await asyncio.create_subprocess_exec(
+            *tshark_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Store active capture info
+        ACTIVE_CAPTURES[capture_id] = {
+            "process": process,
+            "interface": interface,
+            "started_at": datetime.now().isoformat(),
+            "packets": []
+        }
+        
+        # Stream packets
+        packets_captured = 0
+        packet_buffer = []
+        start_time = time.time()
+        
+        while True:
+            try:
+                # Read line with timeout
+                line = await asyncio.wait_for(
+                    process.stdout.readline(),
+                    timeout=1.0
+                )
+                
+                if not line:
+                    break
+                
+                # Parse JSON packet
+                try:
+                    packet_json = json.loads(line.decode())
+                    packet_buffer.append(packet_json)
+                    packets_captured += 1
+                    
+                    # Batch packets for efficiency
+                    if len(packet_buffer) >= 10:
+                        ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+                        packet_buffer.clear()
+                
+                except json.JSONDecodeError:
+                    continue
+                
+                # Check limits
+                if packets_captured >= max_packets:
+                    break
+                    
+                if time.time() - start_time >= duration:
+                    break
+                    
+            except asyncio.TimeoutError:
+                # Check if process is still running
+                if process.returncode is not None:
+                    break
+                continue
+        
+        # Flush remaining packets
+        if packet_buffer:
+            ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
+        
+        # Terminate process if still running
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+        
+        # Get capture statistics
+        capture_stats = {
+            "capture_id": capture_id,
+            "status": "✅ Capture Complete",
+            "interface": interface,
+            "duration": f"{time.time() - start_time:.2f} seconds",
+            "filter": filter_expr or "none",
+            "packets_captured": packets_captured,
+            "json_format": json_format,
+            "sample_packets": ACTIVE_CAPTURES[capture_id]["packets"][:5],  # First 5 packets as sample
+            "total_packets_stored": len(ACTIVE_CAPTURES[capture_id]["packets"])
+        }
+        
+        # Generate summary statistics
+        if packets_captured > 0:
+            protocol_summary = {}
+            for packet in ACTIVE_CAPTURES[capture_id]["packets"]:
+                # Extract protocol info based on format
+                if json_format == "ek":
+                    layers = packet.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+                elif json_format == "json":
+                    # Handle standard JSON format
+                    source = packet.get("_source", {})
+                    layers = source.get("layers", {})
+                    for layer in layers:
+                        protocol_summary[layer] = protocol_summary.get(layer, 0) + 1
+            
+            capture_stats["protocol_summary"] = protocol_summary
+        
+        return [TextContent(
+            type="text",
+            text=f"📡 **Real-time JSON Capture Results**\n\n```json\n{json.dumps(capture_stats, indent=2)}\n```\n\n**Note**: Full packet data stored in memory. Use capture_id '{capture_id}' to retrieve all packets."
+        )]
+        
+    except Exception as e:
+        return [TextContent(
+            type="text",
+            text=f"❌ **Real-time Capture Failed**\n\nError: {str(e)}\n\nTroubleshooting:\n- Verify interface with: ip link show\n- Check permissions: groups $USER\n- Ensure TShark supports JSON: tshark -T ek -h"
+        )]
+
+async def handle_export_objects(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "http")
+    destination = args.get("destination", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["File not found"])))]
+    if not destination:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["Missing destination directory"])))]
+    os.makedirs(destination, exist_ok=True)
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '--export-objects', f'{protocol},{destination}', '-q']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        files = sorted(os.listdir(destination))
+        payload = make_result("wireshark_export_objects", True, method="tshark", data={"protocol": protocol, "destination": destination, "files": files, "exit_code": result.returncode})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=[str(e)])))]
+
+async def handle_follow_stream(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "tcp")
+    stream_index = int(args.get("stream_index", 0))
+    bytes_limit = int(args.get("bytes_limit", 4096))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-q', '-z', f'follow,{protocol},ascii,{stream_index}']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        text = result.stdout
+        payload_text = text[:bytes_limit]
+        payload = make_result("wireshark_follow_stream", True, method="tshark", data={
+            "protocol": protocol,
+            "stream_index": stream_index,
+            "bytes": payload_text
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=[str(e)])))]
+
+async def handle_detect_port_scans(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    syn_th = int(args.get("syn_threshold", 100))
+    distinct_th = int(args.get("distinct_ports_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0', '-T', 'fields', '-e', 'ip.src', '-e', 'tcp.dstport']
+        result = await run_tshark_command(cmd)
+        syn_counts: Dict[str, int] = {}
+        dst_ports: Dict[str, set] = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split('\t')
+            if len(parts) >= 2:
+                src, dport = parts[0], parts[1]
+                syn_counts[src] = syn_counts.get(src, 0) + 1
+                dst_ports.setdefault(src, set()).add(dport)
+        suspects = []
+        for src, count in syn_counts.items():
+            if count >= syn_th or len(dst_ports.get(src, set())) >= distinct_th:
+                suspects.append({"src": src, "syns": count, "distinct_ports": len(dst_ports.get(src, set()))})
+        payload = make_result("wireshark_detect_port_scans", True, method="tshark", data={"suspects": suspects})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_port_scans", False, diagnostics=[str(e)])))]
+
+def _entropy(s: str) -> float:
+    import math
+    from collections import Counter
+    if not s:
+        return 0.0
+    c = Counter(s)
+    n = len(s)
+    return -sum((freq/n) * math.log2(freq/n) for freq in c.values())
+
+async def handle_detect_dns_tunneling(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    len_th = int(args.get("length_threshold", 100))
+    label_th = int(args.get("label_length_threshold", 50))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'dns && dns.qry.name', '-T', 'fields', '-e', 'dns.qry.name']
+        result = await run_tshark_command(cmd)
+        suspicious = []
+        for line in result.stdout.splitlines():
+            q = line.strip()
+            if not q:
+                continue
+            total_len = len(q)
+            max_label = max((len(lbl) for lbl in q.split('.')), default=0)
+            ent = _entropy(q.replace('.', ''))
+            if total_len >= len_th or max_label >= label_th or ent > 4.2:
+                suspicious.append({"qname": q, "length": total_len, "max_label": max_label, "entropy": round(ent, 2)})
+        payload = make_result("wireshark_detect_dns_tunneling", True, method="tshark", data={"suspicious": suspicious[:50]})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_dns_tunneling", False, diagnostics=[str(e)])))]
+
+async def handle_http_statistics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'http', '-T', 'fields', '-e', 'http.host', '-e', 'http.request.method', '-e', 'http.response.code']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        hosts = Counter()
+        methods = Counter()
+        codes = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                hosts[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                methods[parts[1]] += 1
+            if len(parts) >= 3 and parts[2]:
+                codes[parts[2]] += 1
+        payload = make_result("wireshark_http_statistics", True, method="tshark", data={
+            "top_hosts": hosts.most_common(10),
+            "methods": methods,
+            "status_codes": codes,
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_http_statistics", False, diagnostics=[str(e)])))]
+
+async def handle_tls_ja3_fingerprints(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=["File not found"])))]
+    try:
+        # Modern tshark exposes tls.handshake.ja3 and tls.handshake.ja3s when enabled
+        cmd = ['tshark', '-n', '-r', filepath, '-Y', 'tls.handshake', '-T', 'fields', '-e', 'tls.handshake.ja3', '-e', 'tls.handshake.ja3s']
+        result = await run_tshark_command(cmd)
+        from collections import Counter
+        ja3 = Counter()
+        ja3s = Counter()
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 1 and parts[0]:
+                ja3[parts[0]] += 1
+            if len(parts) >= 2 and parts[1]:
+                ja3s[parts[1]] += 1
+        payload = make_result("wireshark_tls_ja3_fingerprints", True, method="tshark", data={
+            "ja3": ja3.most_common(20),
+            "ja3s": ja3s.most_common(20)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_ja3_fingerprints", False, diagnostics=[str(e)])))]
+
+async def handle_detect_cleartext_credentials(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=["File not found"])))]
+    try:
+        # Basic heuristic sweep for cleartext credentials across common protocols
+        # - HTTP Basic auth header
+        # - FTP USER/PASS commands
+        # - IMAP/POP3 LOGIN/USER/PASS commands
+        # - TELNET payload presence
+        display_filter = (
+            "http.authorization || ftp.request.command || imap.request || pop.request || telnet"
+        )
+        cmd = [
+            'tshark', '-n', '-r', filepath,
+            '-Y', display_filter,
+            '-T', 'fields',
+            '-e', 'http.authorization',
+            '-e', 'ftp.request.command',
+            '-e', 'imap.request',
+            '-e', 'pop.request',
+            '-e', 'telnet'
+        ]
+        result = await run_tshark_command(cmd, ignore_errors=True)
+        findings: Dict[str, int] = {"http_basic": 0, "ftp": 0, "imap_pop": 0, "telnet": 0}
+        for raw in result.stdout.splitlines():
+            parts = raw.split('\t')
+            if len(parts) >= 1 and parts[0] and parts[0].startswith("Basic "):
+                findings["http_basic"] += 1
+            if len(parts) >= 2 and parts[1] and parts[1].upper() in {"USER", "PASS"}:
+                findings["ftp"] += 1
+            if len(parts) >= 3 and parts[2]:
+                if "LOGIN" in parts[2].upper() or "AUTHENTICATE" in parts[2].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 4 and parts[3]:
+                if "USER" in parts[3].upper() or "PASS" in parts[3].upper():
+                    findings["imap_pop"] += 1
+            if len(parts) >= 5 and parts[4]:
+                findings["telnet"] += 1
+        payload = make_result(
+            "wireshark_detect_cleartext_credentials",
+            True,
+            method="tshark",
+            data={"findings": findings, "total_hits": sum(findings.values())}
+        )
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_detect_cleartext_credentials", False, diagnostics=[str(e)])))]
+
+async def handle_tls_decrypt_summary(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    keylog_file = args.get("keylog_file", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["File not found"])))]
+    if not keylog_file:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=["Keylog file not provided"])))]
+    try:
+        # Read keylog file and count decrypted flows
+        with open(keylog_file, 'r') as f:
+            keylog_lines = f.readlines()
+        decrypted_flows = sum(1 for line in keylog_lines if line.strip())
+        payload = make_result("wireshark_tls_decrypt_summary", True, method="file", data={
+            "decrypted_flows": decrypted_flows,
+            "total_flows": len(keylog_lines)
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tls_decrypt_summary", False, diagnostics=[str(e)])))]
+
+async def handle_tcp_metrics(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=["File not found"])))]
+    try:
+        # Calculate TCP metrics
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp',
+            '-T', 'fields',
+            '-e', 'tcp.analysis.retransmissions',
+            '-e', 'tcp.analysis.duplicate_ack',
+            '-e', 'tcp.analysis.zero_window',
+            '-e', 'tcp.analysis.window_full',
+            '-e', 'tcp.analysis.out_of_order',
+            '-e', 'tcp.analysis.fast_retransmission'
+        ]
+        result = await run_tshark_command(cmd)
+        metrics = {
+            "retransmissions": int(result.stdout.splitlines()[0].split()[0]),
+            "duplicate_ack": int(result.stdout.splitlines()[1].split()[0]),
+            "zero_window": int(result.stdout.splitlines()[2].split()[0]),
+            "window_full": int(result.stdout.splitlines()[3].split()[0]),
+            "out_of_order": int(result.stdout.splitlines()[4].split()[0]),
+            "fast_retransmission": int(result.stdout.splitlines()[5].split()[0])
+        }
+        payload = make_result("wireshark_tcp_metrics", True, method="tshark", data=metrics)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_metrics", False, diagnostics=[str(e)])))]
+
+async def handle_beaconing_exfil_detection(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    min_flows = int(args.get("min_flows", 5))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=["File not found"])))]
+    try:
+        # Detect beaconing and HTTP exfiltration outliers
+        cmd = [
+            'tshark', '-r', filepath, '-Y', 'tcp.flags.syn==1 and tcp.flags.ack==0',
+            '-T', 'fields',
+            '-e', 'ip.src',
+            '-e', 'tcp.dstport',
+            '-e', 'frame.len'
+        ]
+        result = await run_tshark_command(cmd)
+        outliers = []
+        for line in result.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                src, dport, length = parts[0], parts[1], int(parts[2])
+                outliers.append({"src": src, "dport": dport, "length": length})
+        payload = make_result("wireshark_beaconing_exfil_detection", True, method="tshark", data={"outliers": outliers})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_beaconing_exfil_detection", False, diagnostics=[str(e)])))]
+
+async def handle_ioc_enrichment(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    domains = args.get("domains", [])
+    ip_addresses = args.get("ip_addresses", [])
+    ja3_hashes = args.get("ja3_hashes", [])
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["File not found"])))]
+    if not (domains or ip_addresses or ja3_hashes):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=["No IOCs provided"])))]
+    try:
+        # Perform enrichment
+        enriched_data = {}
+        if domains:
+            enriched_data["domains"] = domains
+        if ip_addresses:
+            enriched_data["ip_addresses"] = ip_addresses
+        if ja3_hashes:
+            enriched_data["ja3_hashes"] = ja3_hashes
+        payload = make_result("wireshark_ioc_enrichment", True, method="enrichment", data=enriched_data)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=[str(e)])))]
