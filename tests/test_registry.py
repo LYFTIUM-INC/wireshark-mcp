@@ -42,6 +42,8 @@ def test_tools_registry_contains_expected():
         "wireshark_smb_lateral_detection",
         "wireshark_auth_bruteforce_detection",
         "wireshark_icmp_exfil_detection",
+        "wireshark_quic_spin_rtt_metrics",
+        "wireshark_tls_decrypt_sessions",
     }
     assert expected.issubset(set(tools))
 

@@ -7274,3 +7274,81 @@ async def list_tools() -> List[_ToolAlias]:  # type: ignore[override]
     ]
     return base + extra
 
+
+# ===== Appended: Optional advanced metrics =====
+from mcp.types import Tool as _ToolAlias2, TextContent as _TextAlias2
+
+async def handle_quic_spin_rtt_metrics(args: Dict[str, Any]) -> List[_TextAlias2]:
+    fp = args.get('filepath', '')
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias2(type='text', text=json.dumps(make_result('wireshark_quic_spin_rtt_metrics', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-Y','quic','-T','fields','-e','ip.src','-e','ip.dst','-e','frame.time_relative','-e','quic.spin_bit']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        from collections import defaultdict
+        flow_bits = defaultdict(list)
+        for line in r.stdout.splitlines():
+            parts = line.split('\t')
+            if len(parts) < 4:
+                continue
+            src, dst, t, bit = parts[0], parts[1], parts[2], parts[3]
+            try:
+                t = float(t); b = int(bit) if bit != '' else None
+            except Exception:
+                continue
+            if b is None:
+                continue
+            flow_bits[(src,dst)].append((t,b))
+        metrics = []
+        for key, samples in flow_bits.items():
+            samples.sort()
+            prev_b = samples[0][1] if samples else None
+            last_flip_t = samples[0][0] if samples else 0.0
+            intervals = []
+            for t,b in samples[1:]:
+                if b != prev_b:
+                    intervals.append(t - last_flip_t)
+                    last_flip_t = t
+                    prev_b = b
+            intervals = [iv for iv in intervals if iv > 0]
+            if intervals:
+                intervals.sort()
+                p50 = intervals[len(intervals)//2]
+                p95 = intervals[int(0.95*(len(intervals)-1))]
+                metrics.append({'src': key[0], 'dst': key[1], 'flips': len(intervals), 'rtt_estimate_ms': round(p50*1000,2), 'rtt_p95_ms': round(p95*1000,2)})
+        payload = make_result('wireshark_quic_spin_rtt_metrics', True, method='tshark', data={'flows': metrics})
+        return [_TextAlias2(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias2(type='text', text=json.dumps(make_result('wireshark_quic_spin_rtt_metrics', False, diagnostics=[str(e)])))]
+
+async def handle_tls_decrypt_sessions(args: Dict[str, Any]) -> List[_TextAlias2]:
+    fp = args.get('filepath',''); keylog = args.get('keylog_file','')
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias2(type='text', text=json.dumps(make_result('wireshark_tls_decrypt_sessions', False, diagnostics=['File not found'])))]
+    if not keylog:
+        return [_TextAlias2(type='text', text=json.dumps(make_result('wireshark_tls_decrypt_sessions', False, diagnostics=['Keylog file not provided'])))]
+    try:
+        # Leverage tshark with keylog to extract SNI and JA3 for decrypted sessions
+        cmd = ['tshark','-n','-o', f'tls.keylog_file:{keylog}', '-r', fp, '-Y', 'tls.handshake || tls.app_data','-T','fields','-e','tls.handshake.extensions_server_name','-e','tls.handshake.ja3']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        from collections import Counter
+        sni = Counter(); ja3 = Counter()
+        for line in r.stdout.splitlines():
+            p = line.split('\t')
+            if len(p)>=1 and p[0]: sni[p[0]] += 1
+            if len(p)>=2 and p[1]: ja3[p[1]] += 1
+        payload = make_result('wireshark_tls_decrypt_sessions', True, method='tshark', data={'by_sni': sni.most_common(20), 'by_ja3': ja3.most_common(20)})
+        return [_TextAlias2(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias2(type='text', text=json.dumps(make_result('wireshark_tls_decrypt_sessions', False, diagnostics=[str(e)])))]
+
+_prev_list_tools2 = list_tools
+@server.list_tools()
+async def list_tools() -> List[_ToolAlias2]:  # type: ignore[override]
+    base = await _prev_list_tools2()
+    extra = [
+        _ToolAlias2(name='wireshark_quic_spin_rtt_metrics', description='Estimate QUIC RTT via spin-bit flip intervals', inputSchema={'type':'object','properties':{'filepath':{'type':'string'}},'required':['filepath']}),
+        _ToolAlias2(name='wireshark_tls_decrypt_sessions', description='Report decrypted TLS sessions by SNI and JA3 using keylog', inputSchema={'type':'object','properties':{'filepath':{'type':'string'}, 'keylog_file':{'type':'string'}},'required':['filepath','keylog_file']}),
+    ]
+    return base + extra
+

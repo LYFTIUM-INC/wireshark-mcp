@@ -541,3 +541,31 @@ def test_icmp_exfil_detection(monkeypatch, tmp_path):
     payload = json.loads(res[0].text)
     assert payload["ok"] is True
     assert payload["data"]["hits"]
+
+
+def test_quic_spin_rtt_metrics(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'quic' in ' '.join(cmd)
+    # Sequence with spin flips 0->1->0 at fixed intervals
+    fake = FakeProcess(0, stdout=b"1.1.1.1\t2.2.2.2\t0.0\t0\n1.1.1.1\t2.2.2.2\t0.05\t1\n1.1.1.1\t2.2.2.2\t0.10\t0\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "quic.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_quic_spin_rtt_metrics
+    res = asyncio.get_event_loop().run_until_complete(handle_quic_spin_rtt_metrics({"filepath": str(p)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["flows"][0]["rtt_estimate_ms"] >= 50.0
+
+
+def test_tls_decrypt_sessions(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'tls.keylog_file' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=b"example.com\tja3hash\nexample.com\tja3hash\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "tls.pcap"; p.write_bytes(b"\x00\x00")
+    keylog = tmp_path / "keys.log"; keylog.write_text("CLIENT_RANDOM a b\n")
+    from wireshark_mcp.server import handle_tls_decrypt_sessions
+    res = asyncio.get_event_loop().run_until_complete(handle_tls_decrypt_sessions({"filepath": str(p), "keylog_file": str(keylog)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["by_sni"][0][0] == "example.com"
