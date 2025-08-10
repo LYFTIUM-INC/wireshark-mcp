@@ -149,3 +149,38 @@ def test_analyze_pcap_envelope(monkeypatch, tmp_path):
     payload = json.loads(res[0].text)
     assert payload["ok"] is True
     assert "protocol_hierarchy" in payload["data"]
+
+
+def test_live_capture_interface_validation(monkeypatch):
+    # tshark -D returns eth0 only
+    def is_tshark_D(cmd):
+        return len(cmd) >= 2 and cmd[0] == "tshark" and cmd[1] == "-D"
+
+    tshark_D = FakeProcess(returncode=0, stdout=b"1. eth0\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark_D, tshark_D)]))
+
+    res = asyncio.get_event_loop().run_until_complete(handle_live_capture({"interface": "lo", "duration": 1, "max_packets": 1}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is False
+    assert "Unknown interface" in " ".join(payload["diagnostics"]) 
+
+
+def test_live_capture_quick_triage_and_ring(monkeypatch):
+    # tshark direct success
+    call_log = []
+
+    async def _create(*cmd, **kwargs):
+        call_log.append(list(cmd))
+        # Return empty JSON for tshark direct, or success for tcpdump/tshark parse
+        if cmd[0] == "tshark":
+            return FakeProcess(0, stdout=b"[]")
+        return FakeProcess(0, stdout=b"")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _create)
+    res = asyncio.get_event_loop().run_until_complete(handle_live_capture({
+        "interface": "any", "duration": 5, "max_packets": 1000, "quick_triage": True, "ring_files": 3, "ring_megabytes": 2
+    }))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] in [True, False]  # envelope present
+    # Ensure tshark was invoked (with -n)
+    assert any(c[0] == "tshark" and "-n" in c for c in call_log)

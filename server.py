@@ -126,6 +126,21 @@ async def list_tools() -> List[Tool]:
                         "type": "integer",
                         "description": "Maximum number of packets to capture",
                         "default": 1000
+                    },
+                    "ring_files": {
+                        "type": "integer",
+                        "description": "Number of ring files to use",
+                        "default": 5
+                    },
+                    "ring_megabytes": {
+                        "type": "integer",
+                        "description": "Maximum size of each ring file in megabytes",
+                        "default": 10
+                    },
+                    "quick_triage": {
+                        "type": "boolean",
+                        "description": "Enable quick triage mode",
+                        "default": False
                     }
                 },
                 "required": ["interface"]
@@ -1073,22 +1088,35 @@ async def handle_generate_filter(args: Dict[str, Any]) -> List[TextContent]:
     description = args.get("description", "")
     complexity = args.get("complexity", "intermediate")
     
-    # Enhanced filter generation with regex patterns and subnet support
-    generated_filter = await advanced_filter_generation(description, complexity)
-    
-    result = {
-        "description": description,
-        "generated_filter": generated_filter["filter"],
-        "complexity": complexity,
-        "suggestions": generated_filter["suggestions"],
-        "matched_patterns": generated_filter["matched_patterns"],
-        "parsing_notes": generated_filter.get("notes", [])
-    }
-    
-    return [TextContent(
-        type="text",
-        text=f"🎯 **Generated Wireshark Filter**\n\n**Input**: {description}\n\n**Filter**: `{generated_filter['filter']}`\n\n**Details**:\n{json.dumps(result, indent=2)}"
-    )]
+    generated = await advanced_filter_generation(description, complexity)
+    payload = make_result(
+        "wireshark_generate_filter",
+        True,
+        method="local",
+        data={
+            "description": description,
+            "filter": generated["filter"],
+            "complexity": complexity,
+            "suggestions": generated.get("suggestions", []),
+            "matched_patterns": generated.get("matched_patterns", []),
+            "notes": generated.get("notes", []),
+        },
+    )
+    return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+async def get_capture_interfaces() -> List[str]:
+    try:
+        proc = await asyncio.create_subprocess_exec('tshark', '-D', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        names: List[str] = []
+        if proc.returncode == 0 and stdout:
+            for line in stdout.decode().splitlines():
+                parts = line.split('. ', 1)
+                if len(parts) == 2:
+                    names.append(parts[1].split()[0])
+        return names
+    except Exception:
+        return []
 
 async def handle_live_capture(args: Dict[str, Any]) -> List[TextContent]:
     """Handle live packet capture with automatic permissions detection."""
@@ -1096,15 +1124,31 @@ async def handle_live_capture(args: Dict[str, Any]) -> List[TextContent]:
     duration = int(args.get("duration", 60))
     filter_expr = args.get("filter", "")
     max_packets = int(args.get("max_packets", 1000))
+    ring_files = int(args.get("ring_files", os.getenv("WIRESHARK_RING_FILES", 5)))
+    ring_mb = int(args.get("ring_megabytes", os.getenv("WIRESHARK_RING_MB", 10)))
+    quick_triage = bool(args.get("quick_triage", False))
     
-    # Basic validation
     diagnostics: List[str] = []
     if duration <= 0 or max_packets <= 0:
         payload = make_result("wireshark_live_capture", False, diagnostics=["duration and max_packets must be > 0"])
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     
+    # Validate interface if not "any"
+    if interface != "any":
+        known = await get_capture_interfaces()
+        if known and interface not in known:
+            payload = make_result("wireshark_live_capture", False, diagnostics=[f"Unknown interface: {interface}", f"Known: {', '.join(known)}"])
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
+    # Apply env for ring buffer if provided by args
+    os.environ["WIRESHARK_RING_FILES"] = str(ring_files)
+    os.environ["WIRESHARK_RING_MB"] = str(ring_mb)
+    
     try:
-        # Try capture
+        # For quick triage, reduce max_packets and duration lightly
+        if quick_triage:
+            max_packets = min(max_packets, 200)
+            duration = min(duration, 10)
         capture_result = await perform_live_capture_enhanced(interface, duration, filter_expr, max_packets)
         payload = make_result("wireshark_live_capture", capture_result.get("status", "").startswith("✅"), method=capture_result.get("method_used", ""), data=capture_result)
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
