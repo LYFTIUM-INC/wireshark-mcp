@@ -383,7 +383,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         # Compliance tool calls
         elif name == "compliance_framework_assessment":
             result = await unified_compliance_assessment(
-                frameworks=arguments.get("frameworks", ["soc2", "gdpr", "nist"])
+                frameworks=arguments.get("frameworks", ["soc2", "gdpr", "nist"]) 
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
@@ -396,7 +396,7 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
         elif name == "compliance_audit_reporter":
             result = await compliance_audit_reporter(
                 report_type=arguments.get("report_type", "comprehensive"),
-                frameworks=arguments.get("frameworks", ["soc2", "gdpr", "nist"])
+                frameworks=arguments.get("frameworks", ["soc2", "gdpr", "nist"]) 
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
