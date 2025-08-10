@@ -101,40 +101,34 @@ async def wireshark_live_capture_enhanced(
     except Exception as e:
         results["tcpdump_error"] = str(e)
     
-    # Method 2: Try sg wireshark
-    try:
-        cmd = [
-            'sg', 'wireshark', '-c',
-            f'timeout {duration} tshark -i {interface} -c {max_packets} -T json'
-        ]
-        
-        if filter_expr:
-            cmd[-1] += f' -f "{filter_expr}"'
-        
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await proc.communicate()
-        
-        if proc.returncode in [0, 124]:
-            packets = json.loads(stdout.decode()) if stdout else []
-            
-            results.update({
-                "status": "✅ Success",
-                "method_used": "sg wireshark + tshark",
-                "packets_captured": len(packets),
-                "packets": packets,
-                "capture_time_seconds": time.time() - start_time,
-                "note": "Used group switching for direct tshark access"
-            })
-            
-            return results
-    
-    except Exception as e:
-        results["sg_error"] = str(e)
+    # Method 2 (optional): Try sg wireshark
+    # Enable by setting WIRESHARK_ENABLE_SG=1 (disabled by default for safety)
+    if os.getenv("WIRESHARK_ENABLE_SG") == "1":
+        try:
+            # Note: sg -c executes a shell. We do NOT interpolate filter_expr here to avoid injection.
+            cmd = [
+                'sg', 'wireshark', '-c',
+                f'timeout {duration} tshark -i {interface} -c {max_packets} -T json'
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode in [0, 124]:
+                packets = json.loads(stdout.decode()) if stdout else []
+                results.update({
+                    "status": "✅ Success",
+                    "method_used": "sg wireshark + tshark",
+                    "packets_captured": len(packets),
+                    "packets": packets,
+                    "capture_time_seconds": time.time() - start_time,
+                    "note": "Used group switching for direct tshark access"
+                })
+                return results
+        except Exception as e:
+            results["sg_error"] = str(e)
     
     # If all methods fail
     results.update({

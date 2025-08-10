@@ -1492,48 +1492,43 @@ async def _enhanced_capture_fallback(
         if 'pcap_file' in locals() and os.path.exists(pcap_file):
             os.unlink(pcap_file)
     
-    # Method 3: Try sg wireshark (group switching)
-    try:
-        cmd = [
-            'sg', 'wireshark', '-c',
-            f'timeout {duration + 5} tshark -i {interface} -c {max_packets} -T json'
-        ]
-        
-        if filter_expr:
-            cmd[-1] += f' -f "{filter_expr}"'
-        
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=duration + 10)
-        
-        if proc.returncode in [0, 124]:
-            try:
-                packets = json.loads(stdout.decode()) if stdout.decode().strip() else []
-                capture_time = asyncio.get_event_loop().time() - start_time
-                
-                return {
-                    "status": "✅ Success",
-                    "method_used": "sg wireshark + tshark", 
-                    "interface": interface,
-                    "duration": duration,
-                    "filter": filter_expr,
-                    "packets_captured": len(packets),
-                    "max_packets": max_packets,
-                    "packets": packets[:10],
-                    "capture_time_seconds": round(capture_time, 2),
-                    "note": "Used group switching to access wireshark group",
-                    "recommendation": "Consider restarting Claude Desktop to activate wireshark group permanently"
-                }
-            except json.JSONDecodeError:
-                logger.info("sg wireshark: JSON decode failed")
-        else:
-            logger.info(f"sg wireshark failed: {stderr.decode()[:100]}")
-    except Exception as e:
-        logger.info(f"sg wireshark fallback failed: {str(e)}")
+    # Method 3 (optional): Try sg wireshark (group switching)
+    if os.getenv("WIRESHARK_ENABLE_SG") == "1":
+        try:
+            cmd = [
+                'sg', 'wireshark', '-c',
+                f'timeout {duration + 5} tshark -i {interface} -c {max_packets} -T json'
+            ]
+            # Note: do NOT interpolate filter_expr into shell string to avoid injection risks
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=duration + 10)
+            if proc.returncode in [0, 124]:
+                try:
+                    packets = json.loads(stdout.decode()) if stdout.decode().strip() else []
+                    capture_time = asyncio.get_event_loop().time() - start_time
+                    return {
+                        "status": "✅ Success",
+                        "method_used": "sg wireshark + tshark", 
+                        "interface": interface,
+                        "duration": duration,
+                        "filter": filter_expr,
+                        "packets_captured": len(packets),
+                        "max_packets": max_packets,
+                        "packets": packets[:10],
+                        "capture_time_seconds": round(capture_time, 2),
+                        "note": "Used group switching to access wireshark group",
+                        "recommendation": "Consider restarting Claude Desktop to activate wireshark group permanently"
+                    }
+                except json.JSONDecodeError:
+                    logger.info("sg wireshark: JSON decode failed")
+            else:
+                logger.info(f"sg wireshark failed: {stderr.decode()[:100]}")
+        except Exception as e:
+            logger.info(f"sg wireshark fallback failed: {str(e)}")
     
     # All methods failed
     capture_time = asyncio.get_event_loop().time() - start_time
