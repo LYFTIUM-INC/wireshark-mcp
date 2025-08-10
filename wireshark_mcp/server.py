@@ -541,7 +541,6 @@ async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent
         # Flush remaining packets
         if packet_buffer:
             ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
-        
         # Terminate process if still running
         if process.returncode is None:
             process.terminate()
@@ -2684,7 +2683,6 @@ async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent
         # Flush remaining packets
         if packet_buffer:
             ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
-        
         # Terminate process if still running
         if process.returncode is None:
             process.terminate()
@@ -3337,7 +3335,6 @@ async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent
         # Flush remaining packets
         if packet_buffer:
             ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
-        
         # Terminate process if still running
         if process.returncode is None:
             process.terminate()
@@ -3990,7 +3987,6 @@ async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent
         # Flush remaining packets
         if packet_buffer:
             ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
-        
         # Terminate process if still running
         if process.returncode is None:
             process.terminate()
@@ -4643,7 +4639,6 @@ async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent
         # Flush remaining packets
         if packet_buffer:
             ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
-        
         # Terminate process if still running
         if process.returncode is None:
             process.terminate()
@@ -5296,7 +5291,6 @@ async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent
         # Flush remaining packets
         if packet_buffer:
             ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
-        
         # Terminate process if still running
         if process.returncode is None:
             process.terminate()
@@ -5949,7 +5943,6 @@ async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent
         # Flush remaining packets
         if packet_buffer:
             ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
-        
         # Terminate process if still running
         if process.returncode is None:
             process.terminate()
@@ -6602,7 +6595,6 @@ async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent
         # Flush remaining packets
         if packet_buffer:
             ACTIVE_CAPTURES[capture_id]["packets"].extend(packet_buffer)
-        
         # Terminate process if still running
         if process.returncode is None:
             process.terminate()
@@ -7333,16 +7325,30 @@ async def handle_tls_decrypt_sessions(args: Dict[str, Any]) -> List[_TextAlias2]
     if not keylog:
         return [_TextAlias2(type='text', text=json.dumps(make_result('wireshark_tls_decrypt_sessions', False, diagnostics=['Keylog file not provided'])))]
     try:
-        # Leverage tshark with keylog to extract SNI and JA3 for decrypted sessions
-        cmd = ['tshark','-n','-o', f'tls.keylog_file:{keylog}', '-r', fp, '-Y', 'tls.handshake || tls.app_data','-T','fields','-e','tls.handshake.extensions_server_name','-e','tls.handshake.ja3']
+        # Use keylog to extract SNI/JA3 and approximate decrypted bytes per SNI/JA3
+        cmd = ['tshark','-n','-o', f'tls.keylog_file:{keylog}', '-r', fp,
+               '-Y', 'tls.handshake || tls.app_data',
+               '-T','fields',
+               '-e','tls.handshake.extensions_server_name',
+               '-e','tls.handshake.ja3',
+               '-e','frame.len']
         r = await run_tshark_command(cmd, ignore_errors=True)
         from collections import Counter
-        sni = Counter(); ja3 = Counter()
+        sni = Counter(); ja3 = Counter(); bytes_by_sni = Counter(); bytes_by_ja3 = Counter()
+        total_bytes = 0
         for line in r.stdout.splitlines():
             p = line.split('\t')
             if len(p)>=1 and p[0]: sni[p[0]] += 1
             if len(p)>=2 and p[1]: ja3[p[1]] += 1
-        payload = make_result('wireshark_tls_decrypt_sessions', True, method='tshark', data={'by_sni': sni.most_common(20), 'by_ja3': ja3.most_common(20)})
+            if len(p)>=3 and p[2].isdigit():
+                blen = int(p[2]); total_bytes += blen
+                if p[0]: bytes_by_sni[p[0]] += blen
+                if len(p)>=2 and p[1]: bytes_by_ja3[p[1]] += blen
+        payload = make_result('wireshark_tls_decrypt_sessions', True, method='tshark', data={
+            'by_sni': sni.most_common(20), 'by_ja3': ja3.most_common(20),
+            'bytes_by_sni': bytes_by_sni.most_common(20), 'bytes_by_ja3': bytes_by_ja3.most_common(20),
+            'summary': {'total_decrypted_bytes': total_bytes}
+        })
         return [_TextAlias2(type='text', text=json.dumps(payload, indent=2))]
     except Exception as e:
         return [_TextAlias2(type='text', text=json.dumps(make_result('wireshark_tls_decrypt_sessions', False, diagnostics=[str(e)])))]
@@ -7474,13 +7480,22 @@ async def handle_ja4_fingerprints(args: Dict[str, Any]) -> List[_TextAlias3]:
     if not (fp and os.path.exists(fp)):
         return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_ja4_fingerprints', False, diagnostics=['File not found'])))]
     try:
-        # Approximate: report tuple (dst,port,ja3) as a placeholder; full JA4 derivation omitted here
-        cmd = ['tshark','-n','-r',fp,'-Y','tls.handshake','-T','fields','-e','ip.dst','-e','tcp.dstport','-e','tls.handshake.ja3']
+        # Improved approximation: combine version, dstport, ciphersuite count, and extension count hashed into JA4-like token
+        cmd = ['tshark','-n','-r',fp,'-Y','tls.handshake',
+               '-T','fields',
+               '-e','ip.dst','-e','tcp.dstport','-e','tls.handshake.ja3',
+               '-e','tls.record.version','-e','tls.handshake.ciphersuites','-e','tls.extension.type']
         r = await run_tshark_command(cmd, ignore_errors=True)
+        import hashlib
         entries = []
         for line in r.stdout.splitlines():
-            p = (line.split('\t')+['','',''])[:3]
-            entries.append({'dst': p[0], 'port': p[1], 'ja3': p[2], 'ja4': f"ja4:{p[2]}:{p[1]}"})
+            p = (line.split('\t')+['','','','',''])[:6]
+            dst, dport, ja3, ver, suites, exts = p
+            suite_count = len(suites.split(':')) if suites else 0
+            ext_count = len(exts.split(',')) if exts else 0
+            basis = f"{ver}|{dport}|{suite_count}|{ext_count}"
+            ja4_like = 'ja4:' + hashlib.md5(basis.encode()).hexdigest()[:16]
+            entries.append({'dst': dst, 'port': dport, 'ja3': ja3, 'ja4': ja4_like})
         payload = make_result('wireshark_ja4_fingerprints', True, method='tshark', data={'entries': entries[:50]})
         return [_TextAlias3(type='text', text=json.dumps(payload, indent=2))]
     except Exception as e:
