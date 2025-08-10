@@ -7,8 +7,8 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
-# Import the enhanced capture functions
-from enhanced_server import perform_live_capture_enhanced, _enhanced_capture_fallback
+# Import the capture functions
+from server import perform_live_capture_enhanced, _enhanced_capture_fallback
 
 async def test_enhanced_capture():
     """Test the enhanced capture with multiple durations."""

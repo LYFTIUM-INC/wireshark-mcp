@@ -9,10 +9,10 @@ import json
 import sys
 from pathlib import Path
 
-# Add current directory to path to import enhanced_server
+# Add current directory to path to import server
 sys.path.insert(0, str(Path(__file__).parent))
 
-from enhanced_server import (
+from server import (
     handle_realtime_json_capture,
     handle_protocol_statistics, 
     handle_analyze_pcap_enhanced

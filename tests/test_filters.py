@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from enhanced_server import advanced_filter_generation, combine_filters_intelligently
+from server import advanced_filter_generation, combine_filters_intelligently
 
 
 def test_combine_filters_and_logic():

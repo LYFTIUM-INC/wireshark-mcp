@@ -7,9 +7,9 @@ This script provides direct access to the 3 enhanced tools that exist in the cod
 but aren't accessible through the MCP interface due to caching/connection issues.
 
 Usage:
-  python3 enhanced_tools_bridge.py realtime_json_capture --interface=lo --duration=10
-  python3 enhanced_tools_bridge.py protocol_statistics --source=/path/to/file.pcap 
-  python3 enhanced_tools_bridge.py analyze_pcap_enhanced --filepath=/path/to/file.pcap
+  python3 tools_bridge.py realtime_json_capture --interface=lo --duration=10
+  python3 tools_bridge.py protocol_statistics --source=/path/to/file.pcap 
+  python3 tools_bridge.py analyze_pcap_enhanced --filepath=/path/to/file.pcap
 """
 
 import asyncio
@@ -21,7 +21,7 @@ from pathlib import Path
 # Add current directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from enhanced_server import (
+from server import (
     handle_realtime_json_capture,
     handle_protocol_statistics,
     handle_analyze_pcap_enhanced

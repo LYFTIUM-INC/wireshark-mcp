@@ -51,7 +51,7 @@ sudo usermod -a -G wireshark $USER && newgrp wireshark
 ```
 
 ### **⚙️ Configure Claude Desktop**
-Add this MCP server to Claude Desktop, pointing to `enhanced_server.py`.
+Add this MCP server to Claude Desktop, pointing to `server.py`.
 
 ---
 
