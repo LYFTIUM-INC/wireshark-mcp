@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, AsyncGenerator
 from datetime import datetime
+import shutil
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -1009,104 +1010,63 @@ async def handle_system_info(args: Dict[str, Any]) -> List[TextContent]:
     info_type = args.get("info_type", "all")
     
     result = {
-        "wireshark_mcp_server": "2.0.0 Enhanced",
-        "status": "✅ Active",
-        "capabilities": ["Live Capture", "PCAP Analysis", "Filter Generation", "Security Analysis", "JSON Streaming", "Protocol Statistics"]
+        "server_version": os.sys.version.split()[0],
     }
     
-    if info_type in ["interfaces", "all"]:
-        try:
-            # Get network interfaces using ip command
-            interfaces_result = subprocess.run(
-                ["ip", "link", "show"], 
-                capture_output=True, 
-                text=True, 
-                timeout=10
-            )
-            if interfaces_result.returncode == 0:
-                interfaces = []
-                for line in interfaces_result.stdout.split('\n'):
-                    if ': ' in line and 'state' in line:
-                        interface_name = line.split(':')[1].strip().split('@')[0]
-                        interfaces.append(interface_name)
-                result["network_interfaces"] = interfaces
-            else:
-                result["network_interfaces"] = ["Unable to retrieve interfaces"]
-        except Exception as e:
-            result["network_interfaces"] = [f"Error: {str(e)}"]
+    try:
+        if info_type in ["interfaces", "all"]:
+            # Get network interfaces using tshark -D for capture-capable list if available
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    'tshark', '-D', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                stdout, _ = await proc.communicate()
+                if proc.returncode == 0 and stdout:
+                    interfaces = []
+                    for line in stdout.decode().splitlines():
+                        # format: "1. eth0 ..."
+                        parts = line.split(". ", 1)
+                        if len(parts) == 2:
+                            name = parts[1].split()[0]
+                            interfaces.append(name)
+                    result["capture_interfaces"] = interfaces
+            except Exception:
+                pass
     
-    if info_type in ["capabilities", "all"]:
-        result["tools_available"] = [
-            "System Information",
-            "Setup Validation", 
-            "Filter Generation",
-            "Live Capture",
-            "PCAP Analysis",
-            "Real-time JSON Capture",
-            "Protocol Statistics",
-            "Enhanced Analysis"
-        ]
-    
-    return [TextContent(
-        type="text", 
-        text=f"🦈 **Wireshark MCP System Information**\n\n{json.dumps(result, indent=2)}"
-    )]
+        if info_type in ["system", "all"]:
+            result["system"] = {
+                "platform": os.uname().sysname if hasattr(os, 'uname') else "unknown",
+            }
+        
+        payload = make_result("wireshark_system_info", True, method="introspect", data=result)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        payload = make_result("wireshark_system_info", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
 async def handle_validate_setup(args: Dict[str, Any]) -> List[TextContent]:
     """Validate Wireshark installation and setup."""
     full_check = args.get("full_check", False)
     
-    validation_results = {
-        "wireshark_mcp_server": "✅ Running (Enhanced Version)",
-        "python_version": f"✅ {os.sys.version.split()[0]}",
-        "dependencies": {}
-    }
-    
-    # Check for required tools
-    tools_to_check = ["tshark", "tcpdump", "dumpcap", "capinfos"]
-    
-    for tool in tools_to_check:
-        try:
-            result = subprocess.run(
-                ["which", tool], 
-                capture_output=True, 
-                text=True, 
-                timeout=5
-            )
-            if result.returncode == 0:
-                validation_results["dependencies"][tool] = f"✅ {result.stdout.strip()}"
-            else:
-                validation_results["dependencies"][tool] = "❌ Not found"
-        except Exception as e:
-            validation_results["dependencies"][tool] = f"❌ Error: {str(e)}"
-    
-    # Check permissions
+    results: Dict[str, Any] = {"dependencies": {}, "network_access": "unknown"}
     try:
-        # Check if we can access network interfaces
-        result = subprocess.run(
-            ["ip", "link", "show"], 
-            capture_output=True, 
-            text=True, 
-            timeout=5
-        )
-        if result.returncode == 0:
-            validation_results["network_access"] = "✅ Available"
-        else:
-            validation_results["network_access"] = "❌ Limited"
-    except Exception:
-        validation_results["network_access"] = "❌ Error checking access"
-    
-    # Check enhanced features
-    validation_results["enhanced_features"] = {
-        "json_capture": "✅ Available",
-        "protocol_statistics": "✅ Available",
-        "streaming_analysis": "✅ Available"
-    }
-    
-    return [TextContent(
-        type="text",
-        text=f"🔍 **Wireshark MCP Setup Validation**\n\n{json.dumps(validation_results, indent=2)}"
-    )]
+        for tool in ["tshark", "tcpdump", "dumpcap", "capinfos"]:
+            path = shutil.which(tool) if 'shutil' in globals() else None
+            if not path:
+                import shutil as _sh
+                path = _sh.which(tool)
+            results["dependencies"][tool] = path or "not-found"
+        try:
+            proc = await asyncio.create_subprocess_exec('ip', 'link', 'show', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, _ = await proc.communicate()
+            results["network_access"] = "available" if proc.returncode == 0 else "limited"
+        except Exception:
+            results["network_access"] = "unknown"
+        payload = make_result("wireshark_validate_setup", True, method="probe", data=results)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        payload = make_result("wireshark_validate_setup", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
 async def handle_generate_filter(args: Dict[str, Any]) -> List[TextContent]:
     """Generate Wireshark filters from natural language with advanced parsing."""
@@ -1133,35 +1093,25 @@ async def handle_generate_filter(args: Dict[str, Any]) -> List[TextContent]:
 async def handle_live_capture(args: Dict[str, Any]) -> List[TextContent]:
     """Handle live packet capture with automatic permissions detection."""
     interface = args.get("interface", "any")
-    duration = args.get("duration", 60)
+    duration = int(args.get("duration", 60))
     filter_expr = args.get("filter", "")
-    max_packets = args.get("max_packets", 1000)
+    max_packets = int(args.get("max_packets", 1000))
     
-    # Check if we have capture capabilities
-    # Enhanced implementation - try capture regardless of permission check
-    # This allows fallback methods to work even if primary permissions are missing
+    # Basic validation
+    diagnostics: List[str] = []
+    if duration <= 0 or max_packets <= 0:
+        payload = make_result("wireshark_live_capture", False, diagnostics=["duration and max_packets must be > 0"])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    
     try:
+        # Try capture
         capture_result = await perform_live_capture_enhanced(interface, duration, filter_expr, max_packets)
-        return [TextContent(
-            type="text",
-            text=f"📡 **Live Packet Capture Results**\n\n{json.dumps(capture_result, indent=2)}"
-        )]
+        payload = make_result("wireshark_live_capture", capture_result.get("status", "").startswith("✅"), method=capture_result.get("method_used", ""), data=capture_result)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     except Exception as e:
-        error_result = {
-            "status": "❌ Capture Failed",
-            "interface": interface,
-            "error": str(e),
-            "troubleshooting": [
-                "Verify interface name with: ip link show",
-                "Check permissions with: ./test_capture_permissions.py",
-                "Ensure you're in wireshark group: groups $USER"
-            ]
-        }
-        
-        return [TextContent(
-            type="text",
-            text=f"❌ **Live Capture Failed**\n\n{json.dumps(error_result, indent=2)}"
-        )]
+        diagnostics.append(str(e))
+        payload = make_result("wireshark_live_capture", False, diagnostics=diagnostics)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
 async def handle_analyze_pcap(args: Dict[str, Any]) -> List[TextContent]:
     """Handle PCAP file analysis with real packet inspection."""
@@ -1169,37 +1119,27 @@ async def handle_analyze_pcap(args: Dict[str, Any]) -> List[TextContent]:
     analysis_type = args.get("analysis_type", "comprehensive")
     
     if not filepath:
-        return [TextContent(type="text", text="❌ Error: No filepath provided")]
+        payload = make_result("wireshark_analyze_pcap", False, diagnostics=["No filepath provided"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     
-    # Check if file exists
     if not os.path.exists(filepath):
-        return [TextContent(type="text", text=f"❌ Error: File not found: {filepath}")]
+        payload = make_result("wireshark_analyze_pcap", False, diagnostics=[f"File not found: {filepath}"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     
-    # Check file permissions
     if not os.access(filepath, os.R_OK):
-        return [TextContent(type="text", text=f"❌ Error: Cannot read file: {filepath}")]
+        payload = make_result("wireshark_analyze_pcap", False, diagnostics=[f"Cannot read file: {filepath}"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     
     try:
-        analysis_result = await analyze_pcap_file(filepath, analysis_type)
-        return [TextContent(
-            type="text",
-            text=f"📊 **PCAP Analysis Results**\n\n{json.dumps(analysis_result, indent=2)}"
-        )]
+        # Quick hierarchy as baseline
+        cmd = ['tshark', '-n', '-r', filepath, '-q', '-z', 'io,phs']
+        result = await run_tshark_command(cmd)
+        stats = parse_protocol_hierarchy(result.stdout)
+        payload = make_result("wireshark_analyze_pcap", True, method="tshark", data={"protocol_hierarchy": stats})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     except Exception as e:
-        error_result = {
-            "status": "❌ Analysis Failed",
-            "file": filepath,
-            "error": str(e),
-            "troubleshooting": [
-                "Verify file is a valid PCAP/PCAPNG file",
-                "Check file permissions: ls -la",
-                "Try with tshark: tshark -r filename.pcap"
-            ]
-        }
-        return [TextContent(
-            type="text",
-            text=f"❌ **PCAP Analysis Failed**\n\n{json.dumps(error_result, indent=2)}"
-        )]
+        payload = make_result("wireshark_analyze_pcap", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
 # Helper functions from original server.py
 

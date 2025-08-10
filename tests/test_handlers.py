@@ -7,7 +7,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server import handle_protocol_statistics, handle_analyze_pcap_enhanced
+from server import (
+    handle_protocol_statistics,
+    handle_analyze_pcap_enhanced,
+    handle_system_info,
+    handle_validate_setup,
+    handle_live_capture,
+    handle_analyze_pcap,
+)
 
 
 class FakeProcess:
@@ -85,3 +92,60 @@ def test_analyze_pcap_enhanced_json_output(monkeypatch, tmp_path):
     assert payload["ok"] is True
     assert payload["tool"] == "wireshark_analyze_pcap_enhanced"
     assert "file_info" in payload["data"]
+
+
+def test_system_info_minimal(monkeypatch):
+    # tshark -D returns two interfaces
+    def is_tshark_D(cmd):
+        return len(cmd) >= 2 and cmd[0] == "tshark" and cmd[1] == "-D"
+
+    tshark_D = FakeProcess(returncode=0, stdout=b"1. eth0\n2. lo\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark_D, tshark_D)]))
+
+    res = asyncio.get_event_loop().run_until_complete(handle_system_info({"info_type": "interfaces"}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert "capture_interfaces" in payload["data"]
+
+
+def test_validate_setup_probes(monkeypatch):
+    # ip link show ok
+    def is_ip_link(cmd):
+        return len(cmd) >= 2 and cmd[0] == "ip" and cmd[1] == "link"
+
+    ip_ok = FakeProcess(returncode=0, stdout=b"link info")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_ip_link, ip_ok)]))
+    res = asyncio.get_event_loop().run_until_complete(handle_validate_setup({}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert "dependencies" in payload["data"]
+
+
+def test_live_capture_envelope(monkeypatch):
+    # tshark success mock in perform_live_capture_enhanced path
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark"
+
+    tshark_ok = FakeProcess(returncode=0, stdout=b"[]")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, tshark_ok)]))
+
+    res = asyncio.get_event_loop().run_until_complete(handle_live_capture({"interface": "lo", "duration": 1, "max_packets": 1}))
+    payload = json.loads(res[0].text)
+    assert payload["tool"] == "wireshark_live_capture"
+    assert "data" in payload
+
+
+def test_analyze_pcap_envelope(monkeypatch, tmp_path):
+    # tshark -z io,phs ok
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark"
+
+    tshark_ok = FakeProcess(returncode=0, stdout=b"ip frames:1 bytes:100")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, tshark_ok)]))
+
+    pcap = tmp_path / "a.pcap"
+    pcap.write_bytes(b"\x00\x00")
+    res = asyncio.get_event_loop().run_until_complete(handle_analyze_pcap({"filepath": str(pcap)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert "protocol_hierarchy" in payload["data"]
