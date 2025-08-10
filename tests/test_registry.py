@@ -49,6 +49,9 @@ def test_tools_registry_contains_expected():
         "wireshark_dns_sequence_anomalies",
         "wireshark_c2_signature_scan",
         "wireshark_ja4_fingerprints",
+        "wireshark_kerberos_auth_spikes",
+        "wireshark_ntlmssp_spikes",
+        "wireshark_dcerpc_uuid_hotspots",
     }
     assert expected.issubset(set(tools))
 

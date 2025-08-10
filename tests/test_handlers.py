@@ -634,3 +634,43 @@ def test_ja4_fingerprints(monkeypatch, tmp_path):
     payload = json.loads(res[0].text)
     assert payload["ok"] is True
     assert payload["data"]["entries"][0]["ja4"].startswith("ja4:")
+
+
+def test_kerberos_auth_spikes(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'kerberos' in ' '.join(cmd)
+    # 20 lines to exceed threshold
+    fake = FakeProcess(0, stdout=("10.0.0.7\tAS-REQ\n"*20).encode())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "krb.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_kerberos_auth_spikes
+    res = asyncio.get_event_loop().run_until_complete(handle_kerberos_auth_spikes({"filepath": str(p), "min_count": 20}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["spikes"][0]["msg_type"]
+
+
+def test_ntlmssp_spikes(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'ntlmssp' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=("10.0.0.8\tuser\n"*12).encode())
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "ntlm.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_ntlmssp_spikes
+    res = asyncio.get_event_loop().run_until_complete(handle_ntlmssp_spikes({"filepath": str(p), "min_count": 10}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["spikes"][0]["username"] == "user"
+
+
+def test_dcerpc_uuid_hotspots(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'dcerpc' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=b"UUID-1\nUUID-1\nUUID-1\nUUID-1\nUUID-1\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "rpc.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_dcerpc_uuid_hotspots
+    res = asyncio.get_event_loop().run_until_complete(handle_dcerpc_uuid_hotspots({"filepath": str(p), "min_count": 5}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["hotspots"][0]["uuid"] == "UUID-1"

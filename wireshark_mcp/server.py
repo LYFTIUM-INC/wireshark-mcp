@@ -821,6 +821,11 @@ async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent
 async def run_tshark_command(cmd: List[str], timeout: int = 300, ignore_errors: bool = False) -> subprocess.CompletedProcess:
     """Run a TShark command with timeout and error handling."""
     try:
+        # Allow env-based binary overrides: TSHARK, CAPINFOS, TCPDUMP, DUMPCAP
+        if cmd and cmd[0] in ("tshark", "capinfos", "tcpdump", "dumpcap"):
+            override = os.getenv(cmd[0].upper())
+            if override:
+                cmd = [override] + cmd[1:]
         result = await asyncio.wait_for(
             asyncio.create_subprocess_exec(
                 *cmd,
@@ -7493,6 +7498,73 @@ async def list_tools() -> List[_ToolAlias3]:  # type: ignore[override]
         _ToolAlias3(name='wireshark_dns_sequence_anomalies', description='Detect bursty DNS query sequences within sliding windows', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'window_seconds':{'type':'number','default':2.0},'burst_min':{'type':'integer','default':5}},'required':['filepath']}),
         _ToolAlias3(name='wireshark_c2_signature_scan', description='Scan UA/URI/JA3 for known C2 signatures (offline list)', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'signatures':{'type':'array','items':{'type':'string'}}},'required':['filepath']}),
         _ToolAlias3(name='wireshark_ja4_fingerprints', description='Approximate JA4/JA4S derivation from TLS handshake', inputSchema={'type':'object','properties':{'filepath':{'type':'string'}},'required':['filepath']}),
+    ]
+    return base + extra
+
+
+# ===== Appended: Kerberos/NTLM/DCERPC detectors =====
+from mcp.types import Tool as _ToolAlias4, TextContent as _TextAlias4
+
+async def handle_kerberos_auth_spikes(args: Dict[str, Any]) -> List[_TextAlias4]:
+    fp = args.get('filepath',''); min_count = int(args.get('min_count', 20))
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias4(type='text', text=json.dumps(make_result('wireshark_kerberos_auth_spikes', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-Y','kerberos','-T','fields','-e','ip.src','-e','kerberos.msg_type']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        from collections import Counter
+        c = Counter()
+        for line in r.stdout.splitlines():
+            p = (line.split('\t')+['',''])[:2]
+            if p[0] and p[1]:
+                c[(p[0], p[1])] += 1
+        spikes = [{'src': k[0], 'msg_type': k[1], 'count': v} for k,v in c.items() if v >= min_count]
+        payload = make_result('wireshark_kerberos_auth_spikes', True, method='tshark', data={'spikes': spikes})
+        return [_TextAlias4(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias4(type='text', text=json.dumps(make_result('wireshark_kerberos_auth_spikes', False, diagnostics=[str(e)])))]
+
+async def handle_ntlmssp_spikes(args: Dict[str, Any]) -> List[_TextAlias4]:
+    fp = args.get('filepath',''); min_count = int(args.get('min_count', 10))
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias4(type='text', text=json.dumps(make_result('wireshark_ntlmssp_spikes', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-Y','ntlmssp','-T','fields','-e','ip.src','-e','ntlmssp.auth.username']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        from collections import Counter
+        c = Counter()
+        for line in r.stdout.splitlines():
+            p = (line.split('\t')+['',''])[:2]
+            c[(p[0], p[1])] += 1
+        spikes = [{'src': k[0], 'username': k[1], 'count': v} for k,v in c.items() if v >= min_count and k[1]]
+        payload = make_result('wireshark_ntlmssp_spikes', True, method='tshark', data={'spikes': spikes})
+        return [_TextAlias4(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias4(type='text', text=json.dumps(make_result('wireshark_ntlmssp_spikes', False, diagnostics=[str(e)])))]
+
+async def handle_dcerpc_uuid_hotspots(args: Dict[str, Any]) -> List[_TextAlias4]:
+    fp = args.get('filepath',''); min_count = int(args.get('min_count', 5))
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias4(type='text', text=json.dumps(make_result('wireshark_dcerpc_uuid_hotspots', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-Y','dcerpc','-T','fields','-e','dcerpc.uuid']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        from collections import Counter
+        c = Counter(r.stdout.splitlines())
+        hotspots = [{'uuid': u, 'count': n} for u,n in c.items() if n >= min_count]
+        payload = make_result('wireshark_dcerpc_uuid_hotspots', True, method='tshark', data={'hotspots': hotspots})
+        return [_TextAlias4(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias4(type='text', text=json.dumps(make_result('wireshark_dcerpc_uuid_hotspots', False, diagnostics=[str(e)])))]
+
+_prev_list_tools4 = list_tools
+@server.list_tools()
+async def list_tools() -> List[_ToolAlias4]:  # type: ignore[override]
+    base = await _prev_list_tools4()
+    extra = [
+        _ToolAlias4(name='wireshark_kerberos_auth_spikes', description='Detect Kerberos AS-REQ/TGS-REQ/AS-REP spikes by source', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'min_count':{'type':'integer','default':20}},'required':['filepath']}),
+        _ToolAlias4(name='wireshark_ntlmssp_spikes', description='Detect NTLMSSP AUTH bursts and username concentration', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'min_count':{'type':'integer','default':10}},'required':['filepath']}),
+        _ToolAlias4(name='wireshark_dcerpc_uuid_hotspots', description='Detect DCERPC UUID hotspots (services targeted)', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'min_count':{'type':'integer','default':5}},'required':['filepath']}),
     ]
     return base + extra
 
