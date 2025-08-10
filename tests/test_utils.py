@@ -43,6 +43,11 @@ def test_run_tshark_command_failure(monkeypatch):
 
 def test_run_tshark_command_timeout(monkeypatch):
     async def wait_for_timeout(coro, timeout):
+        try:
+            # Close the coroutine to avoid unawaited coroutine warnings
+            coro.close()
+        except Exception:
+            pass
         raise asyncio.TimeoutError
 
     monkeypatch.setattr(asyncio, "wait_for", wait_for_timeout)

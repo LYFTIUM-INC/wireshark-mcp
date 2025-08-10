@@ -284,3 +284,81 @@ def test_tls_ja3_fingerprints(monkeypatch, tmp_path):
     payload = json.loads(res[0].text)
     assert payload["ok"] is True
     assert payload["data"]["ja3"]
+
+
+def test_tls_decrypt_summary(tmp_path):
+    keylog = tmp_path / "keys.log"
+    keylog.write_text("CLIENT_RANDOM a b\nCLIENT_RANDOM c d\n")
+    pcap = tmp_path / "t.pcap"
+    pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_tls_decrypt_summary
+    res = asyncio.get_event_loop().run_until_complete(handle_tls_decrypt_summary({
+        "filepath": str(pcap), "keylog_file": str(keylog)
+    }))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["decrypted_flows"] == 2
+
+
+def test_tcp_metrics(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and "-e" in cmd
+    # Provide six lines for six metrics
+    fake = FakeProcess(0, stdout=b"1\n2\n3\n4\n5\n6\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    pcap = tmp_path / "m.pcap"; pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_tcp_metrics
+    res = asyncio.get_event_loop().run_until_complete(handle_tcp_metrics({"filepath": str(pcap)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["retransmissions"] == 1
+
+
+def test_beaconing_exfil_detection(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'tcp.flags.syn==1' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=b"1.2.3.4\t443\t120\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    pcap = tmp_path / "bex.pcap"; pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_beaconing_exfil_detection
+    res = asyncio.get_event_loop().run_until_complete(handle_beaconing_exfil_detection({"filepath": str(pcap), "min_flows": 1}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["outliers"]
+
+
+def test_ioc_enrichment(tmp_path):
+    pcap = tmp_path / "ioc.pcap"; pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_ioc_enrichment
+    res = asyncio.get_event_loop().run_until_complete(handle_ioc_enrichment({
+        "filepath": str(pcap),
+        "domains": ["evil.example"],
+        "ip_addresses": ["10.0.0.1"],
+        "ja3_hashes": ["abcd"]
+    }))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["domains"] == ["evil.example"]
+
+
+def test_detect_cleartext_credentials(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and '-Y' in cmd
+    # Separate lines to populate each column position:
+    # http.authorization, ftp.request.command, imap.request, pop.request, telnet
+    fake = FakeProcess(0, stdout=(
+        b"Basic abc\t\t\t\t\n"      # http_basic
+        b"\tUSER\t\t\t\n"            # ftp USER
+        b"\t\tLOGIN\t\t\n"           # imap LOGIN
+        b"\t\t\t\t1\n"               # telnet
+    ))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    pcap = tmp_path / "c.pcap"; pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_detect_cleartext_credentials
+    res = asyncio.get_event_loop().run_until_complete(handle_detect_cleartext_credentials({"filepath": str(pcap)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["findings"]["http_basic"] >= 1
+    assert payload["data"]["findings"]["ftp"] >= 1
+    assert payload["data"]["findings"]["imap_pop"] >= 1
+    assert payload["data"]["findings"]["telnet"] >= 1

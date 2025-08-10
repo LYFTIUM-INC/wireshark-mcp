@@ -19,6 +19,17 @@ def test_tools_registry_contains_expected():
         "wireshark_realtime_json_capture",
         "wireshark_protocol_statistics",
         "wireshark_analyze_pcap_enhanced",
+        "wireshark_export_objects",
+        "wireshark_follow_stream",
+        "wireshark_detect_port_scans",
+        "wireshark_detect_dns_tunneling",
+        "wireshark_http_statistics",
+        "wireshark_tls_ja3_fingerprints",
+        "wireshark_detect_cleartext_credentials",
+        "wireshark_tls_decrypt_summary",
+        "wireshark_tcp_metrics",
+        "wireshark_beaconing_exfil_detection",
+        "wireshark_ioc_enrichment",
     }
     assert expected.issubset(set(tools))
 
