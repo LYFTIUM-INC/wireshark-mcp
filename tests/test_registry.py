@@ -36,6 +36,12 @@ def test_tools_registry_contains_expected():
         "wireshark_http_exfil_anomalies",
         "wireshark_export_and_hash_objects",
         "wireshark_filter_preset",
+        "wireshark_alpn_quic_summary",
+        "wireshark_doh_dot_detection",
+        "wireshark_domain_fronting_detection",
+        "wireshark_smb_lateral_detection",
+        "wireshark_auth_bruteforce_detection",
+        "wireshark_icmp_exfil_detection",
     }
     assert expected.issubset(set(tools))
 

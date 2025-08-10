@@ -7135,3 +7135,142 @@ async def list_tools():  # type: ignore[override]
         Tool(name='wireshark_filter_preset', description='Return battle-tested filter presets for common blue/red operations', inputSchema={'type':'object','properties':{'preset':{'type':'string','enum':['c2_https','port_scan','lateral_smb','dns_tunnel','cleartext_creds']}},'required':['preset']}),
     ]
     return base + extra
+
+# ===== Appended: Advanced protocol/attack detectors =====
+from mcp.types import Tool as _ToolAlias, TextContent as _TextAlias
+
+async def handle_alpn_quic_summary(args: Dict[str, Any]) -> List[_TextAlias]:
+    fp = args.get('filepath', '')
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_alpn_quic_summary', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-Y','tls || quic','-T','fields','-e','tls.handshake.extensions_alpn_str','-e','quic.version','-e','tls.handshake.extensions_server_name']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        from collections import Counter
+        alpn, quicv, sni = Counter(), Counter(), Counter()
+        for line in r.stdout.splitlines():
+            a,q,s = (line.split('\t') + ['',''])[:3]
+            if a: alpn[a] += 1
+            if q: quicv[q] += 1
+            if s: sni[s] += 1
+        payload = make_result('wireshark_alpn_quic_summary', True, method='tshark', data={
+            'alpn': alpn.most_common(20), 'quic_versions': quicv.most_common(20), 'top_sni': sni.most_common(20)
+        })
+        return [_TextAlias(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_alpn_quic_summary', False, diagnostics=[str(e)])))]
+
+async def handle_doh_dot_detection(args: Dict[str, Any]) -> List[_TextAlias]:
+    fp = args.get('filepath', '')
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_doh_dot_detection', False, diagnostics=['File not found'])))]
+    try:
+        doh_cmd = ['tshark','-n','-r',fp,'-Y','http && (http.request.uri contains /dns-query || http2)','-T','fields','-e','http.host','-e','http.request.uri','-e','http.content_type']
+        doh = await run_tshark_command(doh_cmd, ignore_errors=True)
+        doh_hits = []
+        for line in doh.stdout.splitlines():
+            p = line.split('\t')
+            if len(p) >= 3 and ('dns-message' in (p[2] or '')):
+                doh_hits.append({'host': p[0], 'uri': p[1], 'ctype': p[2]})
+        dot_cmd = ['tshark','-n','-r',fp,'-Y','tcp.port==853 && tls.handshake','-T','fields','-e','ip.dst','-e','tls.handshake.extensions_server_name']
+        dot = await run_tshark_command(dot_cmd, ignore_errors=True)
+        dot_hits = [{'dst': (l.split('\t')+[''])[0], 'sni': (l.split('\t')+[''])[1]} for l in dot.stdout.splitlines()]
+        payload = make_result('wireshark_doh_dot_detection', True, method='tshark', data={'doh': doh_hits[:50], 'dot': dot_hits[:50]})
+        return [_TextAlias(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_doh_dot_detection', False, diagnostics=[str(e)])))]
+
+async def handle_domain_fronting_detection(args: Dict[str, Any]) -> List[_TextAlias]:
+    fp = args.get('filepath', '')
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_domain_fronting_detection', False, diagnostics=['File not found'])))]
+    try:
+        sni_cmd = ['tshark','-n','-r',fp,'-Y','tls.handshake','-T','fields','-e','frame.number','-e','tls.handshake.extensions_server_name']
+        host_cmd = ['tshark','-n','-r',fp,'-Y','http.request','-T','fields','-e','frame.number','-e','http.host']
+        sni = await run_tshark_command(sni_cmd, ignore_errors=True)
+        host = await run_tshark_command(host_cmd, ignore_errors=True)
+        sni_map = {l.split('\t')[0]: (l.split('\t')+[''])[1] for l in sni.stdout.splitlines() if l}
+        host_map = {l.split('\t')[0]: (l.split('\t')+[''])[1] for l in host.stdout.splitlines() if l}
+        mismatches = [{'frame': k, 'sni': sni_map[k], 'host': v} for k,v in host_map.items() if k in sni_map and v and sni_map[k] and v != sni_map[k]]
+        payload = make_result('wireshark_domain_fronting_detection', True, method='tshark', data={'mismatches': mismatches[:50]})
+        return [_TextAlias(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_domain_fronting_detection', False, diagnostics=[str(e)])))]
+
+async def handle_smb_lateral_detection(args: Dict[str, Any]) -> List[_TextAlias]:
+    fp = args.get('filepath', ''); thr = int(args.get('distinct_hosts_threshold', 5))
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_smb_lateral_detection', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-Y','smb2 || smb','-T','fields','-e','ip.src','-e','ip.dst','-e','smb2.cmd']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        from collections import defaultdict
+        dsts = defaultdict(set)
+        for line in r.stdout.splitlines():
+            p = line.split('\t')
+            if len(p) >= 2:
+                dsts[p[0]].add(p[1])
+        suspects = [{'src': s, 'distinct_hosts': len(d)} for s,d in dsts.items() if len(d) >= thr]
+        payload = make_result('wireshark_smb_lateral_detection', True, method='tshark', data={'suspects': suspects})
+        return [_TextAlias(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_smb_lateral_detection', False, diagnostics=[str(e)])))]
+
+async def handle_auth_bruteforce_detection(args: Dict[str, Any]) -> List[_TextAlias]:
+    fp = args.get('filepath', ''); min_attempts = int(args.get('min_attempts', 10))
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_auth_bruteforce_detection', False, diagnostics=['File not found'])))]
+    try:
+        suspects: Dict[str, List[Dict[str, Any]]] = {}
+        from collections import Counter
+        for port in [22,3389,5985,5986]:
+            cmd = ['tshark','-n','-r',fp,'-Y',f'tcp.port=={port}','-T','fields','-e','ip.src','-e','ip.dst']
+            r = await run_tshark_command(cmd, ignore_errors=True)
+            c = Counter()
+            for line in r.stdout.splitlines():
+                p = line.split('\t')
+                if len(p) >= 2:
+                    c[(p[0], p[1])] += 1
+            for (src,dst), n in c.items():
+                if n >= min_attempts:
+                    suspects.setdefault(str(port), []).append({'src': src, 'dst': dst, 'attempts': n})
+        payload = make_result('wireshark_auth_bruteforce_detection', True, method='tshark', data={'suspects': suspects})
+        return [_TextAlias(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_auth_bruteforce_detection', False, diagnostics=[str(e)])))]
+
+async def handle_icmp_exfil_detection(args: Dict[str, Any]) -> List[_TextAlias]:
+    fp = args.get('filepath', ''); size_th = int(args.get('size_threshold', 100))
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_icmp_exfil_detection', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-Y',f'icmp && data.len > {size_th}','-T','fields','-e','ip.src','-e','ip.dst','-e','data.len']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        hits = []
+        for line in r.stdout.splitlines():
+            p = line.split('\t')
+            if len(p) >= 3:
+                try:
+                    hits.append({'src': p[0], 'dst': p[1], 'len': int(p[2])})
+                except Exception:
+                    continue
+        payload = make_result('wireshark_icmp_exfil_detection', True, method='tshark', data={'hits': hits[:50]})
+        return [_TextAlias(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias(type='text', text=json.dumps(make_result('wireshark_icmp_exfil_detection', False, diagnostics=[str(e)])))]
+
+# Extend registry with these tools while preserving previous override
+_prev_list_tools = list_tools
+@server.list_tools()
+async def list_tools() -> List[_ToolAlias]:  # type: ignore[override]
+    base = await _prev_list_tools()
+    extra = [
+        _ToolAlias(name='wireshark_alpn_quic_summary', description='Summarize ALPN, QUIC versions, and SNI counts', inputSchema={'type':'object','properties':{'filepath':{'type':'string'}},'required':['filepath']}),
+        _ToolAlias(name='wireshark_doh_dot_detection', description='Detect DNS over HTTPS/TLS usage', inputSchema={'type':'object','properties':{'filepath':{'type':'string'}},'required':['filepath']}),
+        _ToolAlias(name='wireshark_domain_fronting_detection', description='Detect SNI vs HTTP Host mismatches', inputSchema={'type':'object','properties':{'filepath':{'type':'string'}},'required':['filepath']}),
+        _ToolAlias(name='wireshark_smb_lateral_detection', description='Detect lateral SMB connections across many hosts', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'distinct_hosts_threshold':{'type':'integer','default':5}},'required':['filepath']}),
+        _ToolAlias(name='wireshark_auth_bruteforce_detection', description='Detect brute-force attempts on SSH/RDP/WinRM', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'min_attempts':{'type':'integer','default':10}},'required':['filepath']}),
+        _ToolAlias(name='wireshark_icmp_exfil_detection', description='Detect potential ICMP data exfiltration by payload size', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'size_threshold':{'type':'integer','default':100}},'required':['filepath']}),
+    ]
+    return base + extra
+
