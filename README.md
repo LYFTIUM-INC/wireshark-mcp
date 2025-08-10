@@ -34,15 +34,29 @@ sudo usermod -a -G wireshark $USER && newgrp wireshark
 
 ## Tools
 - Core:
-  - wireshark_system_info
-  - wireshark_validate_setup
-  - wireshark_generate_filter
-  - wireshark_live_capture
-  - wireshark_analyze_pcap
-- Advanced:
-  - wireshark_realtime_json_capture
-  - wireshark_protocol_statistics
-  - wireshark_analyze_pcap_enhanced
+  - wireshark_system_info, wireshark_validate_setup, wireshark_generate_filter, wireshark_live_capture, wireshark_analyze_pcap
+- Advanced analytics:
+  - wireshark_realtime_json_capture, wireshark_protocol_statistics, wireshark_analyze_pcap_enhanced, wireshark_export_objects, wireshark_follow_stream
+- Blue-team detections:
+  - wireshark_detect_port_scans, wireshark_detect_dns_tunneling, wireshark_http_statistics, wireshark_tls_ja3_fingerprints, wireshark_detect_cleartext_credentials
+  - wireshark_tls_decrypt_summary, wireshark_tcp_metrics, wireshark_beaconing_exfil_detection, wireshark_ioc_enrichment
+  - wireshark_tcp_flow_metrics, wireshark_beaconing_detector, wireshark_dns_anomalies, wireshark_http_exfil_anomalies, wireshark_export_and_hash_objects, wireshark_filter_preset
+- Red-team/advanced protocol:
+  - wireshark_alpn_quic_summary, wireshark_doh_dot_detection, wireshark_domain_fronting_detection
+  - wireshark_quic_spin_rtt_metrics, wireshark_tls_decrypt_sessions, wireshark_tls_ech_detection, wireshark_http_h2_h3_anomalies, wireshark_dns_sequence_anomalies, wireshark_c2_signature_scan, wireshark_ja4_fingerprints
+
+## Integration testing
+- Unit tests mock external binaries for speed/determinism: `pytest -q`
+- Run real integration tests (require tshark/capinfos):
+  ```bash
+  INTEGRATION=1 PCAP_PATH=/abs/path/to/sample.pcap pytest -q
+  ```
+
+## Environment overrides
+- Override binary paths:
+  - `TSHARK`, `CAPINFOS`, `TCPDUMP`, `DUMPCAP`
+- Capture ring buffer controls: `WIRESHARK_RING_FILES`, `WIRESHARK_RING_MB`
+- Gate sg fallback: `WIRESHARK_ENABLE_SG=1`
 
 ## Examples
 - Real-time JSON capture: via MCP tool `wireshark_realtime_json_capture`
