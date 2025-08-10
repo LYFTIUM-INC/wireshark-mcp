@@ -6943,3 +6943,195 @@ async def handle_ioc_enrichment(args: Dict[str, Any]) -> List[TextContent]:
         return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     except Exception as e:
         return [TextContent(type="text", text=json.dumps(make_result("wireshark_ioc_enrichment", False, diagnostics=[str(e)])))]
+
+
+# ===== Appended: Additional blue/red team handlers and extended tool registry =====
+
+_base_list_tools = list_tools  # type: ignore[name-defined]
+
+async def handle_tcp_flow_metrics(args: dict) -> list:
+    filepath = args.get("filepath", "")
+    top_n = int(args.get("top_n", 10))
+    from mcp.types import TextContent
+    import json, os
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_tcp_flow_metrics", False, diagnostics=["File not found"]))) ]
+    try:
+        from wireshark_mcp.server import run_tshark_command  # self-import ok
+        cmd = ['tshark','-n','-r',filepath,'-Y','tcp','-T','fields','-e','tcp.stream','-e','tcp.analysis.ack_rtt','-e','tcp.analysis.retransmission']
+        result = await run_tshark_command(cmd, ignore_errors=True)
+        flows={}
+        for line in result.stdout.splitlines():
+            parts=line.split('	')
+            if not parts: continue
+            stream=parts[0] or '-1'
+            rtt=float(parts[1]) if len(parts)>1 and parts[1] else None
+            retrans=1 if len(parts)>2 and parts[2] else 0
+            e=flows.setdefault(stream,{"rtts":[],"retrans":0,"count":0})
+            if rtt is not None: e['rtts'].append(rtt)
+            e['retrans']+=retrans; e['count']+=1
+        def pct(v,p):
+            if not v: return None
+            v=sorted(v); k=int((p/100.0)*(len(v)-1)); return v[k]
+        metrics=[]
+        for stream,d in flows.items():
+            metrics.append({
+                "stream": int(stream) if stream.isdigit() else -1,
+                "samples": d['count'],
+                "retransmissions": d['retrans'],
+                "rtt_p50_ms": round((pct(d['rtts'],50) or 0)*1000,2),
+                "rtt_p95_ms": round((pct(d['rtts'],95) or 0)*1000,2),
+            })
+        metrics.sort(key=lambda x:(x['retransmissions'],x['rtt_p95_ms']), reverse=True)
+        payload=make_result('wireshark_tcp_flow_metrics', True, method='tshark', data={'flows': metrics[:top_n]})
+        return [TextContent(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_tcp_flow_metrics', False, diagnostics=[str(e)])))]
+
+async def handle_beaconing_detector(args: dict) -> list:
+    filepath = args.get("filepath", ""); min_events=int(args.get('min_events',5))
+    from mcp.types import TextContent
+    import json, os, math
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_beaconing_detector', False, diagnostics=['File not found'])))]
+    try:
+        from wireshark_mcp.server import run_tshark_command
+        cmd=['tshark','-n','-r',filepath,'-T','fields','-e','ip.src','-e','ip.dst','-e','frame.time_relative','-e','frame.len']
+        result=await run_tshark_command(cmd, ignore_errors=True)
+        from collections import defaultdict
+        series=defaultdict(list); sizes=defaultdict(list)
+        for line in result.stdout.splitlines():
+            parts=line.split('	')
+            if len(parts)<4: continue
+            key=(parts[0] or '?', parts[1] or '?')
+            try:
+                t=float(parts[2]); l=int(parts[3]) if parts[3] else 0
+            except Exception:
+                continue
+            series[key].append(t); sizes[key].append(l)
+        suspects=[]
+        for key,times in series.items():
+            if len(times)<min_events: continue
+            times=sorted(times)
+            intervals=[t2-t1 for t1,t2 in zip(times,times[1:]) if t2>=t1]
+            if not intervals: continue
+            mean=sum(intervals)/len(intervals)
+            var=sum((x-mean)**2 for x in intervals)/len(intervals)
+            std=(var**0.5); cv= (std/mean) if mean>0 else 999
+            reg=round(1.0/(1.0+cv),3)
+            avg_size=sum(sizes[key])/len(sizes[key]) if sizes[key] else 0
+            suspects.append({'src':key[0],'dst':key[1],'events':len(times),'regularity':reg,'avg_size':avg_size})
+        suspects.sort(key=lambda x:(x['regularity'],x['events']), reverse=True)
+        payload=make_result('wireshark_beaconing_detector', True, method='tshark', data={'suspects': suspects[:20]})
+        return [TextContent(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_beaconing_detector', False, diagnostics=[str(e)])))]
+
+async def handle_dns_anomalies(args: dict) -> list:
+    filepath=args.get('filepath','')
+    from mcp.types import TextContent
+    import json, os, re
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_dns_anomalies', False, diagnostics=['File not found'])))]
+    try:
+        from wireshark_mcp.server import run_tshark_command
+        cmd=['tshark','-n','-r',filepath,'-Y','dns','-T','fields','-e','dns.qry.name','-e','dns.flags.rcode','-e','dns.txt']
+        result=await run_tshark_command(cmd, ignore_errors=True)
+        from collections import Counter
+        nxdomain=0; tld_count=Counter(); long_txt=0; base_enc=0; total=0
+        for line in result.stdout.splitlines():
+            total+=1
+            qname, rcode, txt=(line.split('	') + ['',''])[:3]
+            if rcode.strip()=='3': nxdomain+=1
+            if qname:
+                tld=qname.split('.')[-1]; tld_count[tld]+=1
+                for lbl in qname.split('.'):
+                    if (len(lbl)>=20 and re.fullmatch(r'[A-Za-z2-7=]+', lbl)) or re.fullmatch(r'[A-Za-z0-9+/=]+', lbl):
+                        base_enc+=1; break
+            if txt and len(txt)>50: long_txt+=1
+        rare=[t for t,c in tld_count.items() if c==1]
+        payload=make_result('wireshark_dns_anomalies', True, method='tshark', data={'nxdomain':nxdomain,'total':total,'rare_tlds':rare[:20],'long_txt':long_txt,'base_encoded_labels':base_enc})
+        return [TextContent(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_dns_anomalies', False, diagnostics=[str(e)])))]
+
+async def handle_http_exfil_anomalies(args: dict) -> list:
+    filepath=args.get('filepath',''); size_th=int(args.get('size_threshold',100000))
+    from mcp.types import TextContent
+    import json, os
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_http_exfil_anomalies', False, diagnostics=['File not found'])))]
+    try:
+        from wireshark_mcp.server import run_tshark_command
+        cmd=['tshark','-n','-r',filepath,'-Y','http.request','-T','fields','-e','http.host','-e','http.request.method','-e','http.content_length','-e','http.content_type','-e','frame.time_relative']
+        result=await run_tshark_command(cmd, ignore_errors=True)
+        findings=[]; uncommon={'application/octet-stream','application/x-dosexec'}
+        for line in result.stdout.splitlines():
+            parts=line.split('	')
+            if len(parts)<5: continue
+            host,method,clen,ctype,t=parts[:5]
+            try: clen_i=int(clen) if clen else 0
+            except Exception: clen_i=0
+            if method in {'POST','PUT'} and (clen_i>=size_th or (ctype and ctype in uncommon)):
+                findings.append({'host':host,'method':method,'size':clen_i,'content_type':ctype})
+        payload=make_result('wireshark_http_exfil_anomalies', True, method='tshark', data={'findings': findings[:50]})
+        return [TextContent(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_http_exfil_anomalies', False, diagnostics=[str(e)])))]
+
+async def handle_export_and_hash_objects(args: dict) -> list:
+    filepath=args.get('filepath',''); protocol=args.get('protocol','http'); destination=args.get('destination','')
+    from mcp.types import TextContent
+    import json, os, hashlib
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_export_and_hash_objects', False, diagnostics=['File not found'])))]
+    if not destination:
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_export_and_hash_objects', False, diagnostics=['Missing destination directory'])))]
+    os.makedirs(destination, exist_ok=True)
+    try:
+        from wireshark_mcp.server import run_tshark_command
+        cmd=['tshark','-n','-r',filepath,'--export-objects',f'{protocol},{destination}','-q']
+        await run_tshark_command(cmd, ignore_errors=True)
+        hashes={}
+        for fname in sorted(os.listdir(destination)):
+            fpath=os.path.join(destination,fname)
+            if os.path.isfile(fpath):
+                h=hashlib.sha256()
+                with open(fpath,'rb') as fh:
+                    for chunk in iter(lambda: fh.read(8192), b''): h.update(chunk)
+                hashes[fname]=h.hexdigest()
+        payload=make_result('wireshark_export_and_hash_objects', True, method='tshark', data={'destination':destination,'hashes':hashes})
+        return [TextContent(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_export_and_hash_objects', False, diagnostics=[str(e)])))]
+
+async def handle_filter_preset(args: dict) -> list:
+    from mcp.types import TextContent
+    import json
+    preset=args.get('preset','')
+    presets={
+        'c2_https': 'tls && tcp.port == 443 && (ja3 or tls.handshake.type == 1)',
+        'port_scan': 'tcp.flags.syn == 1 && tcp.flags.ack == 0',
+        'lateral_smb': 'tcp.port in {445,139} && (smb2 || smb)',
+        'dns_tunnel': 'dns && (dns.qry.name.len >= 100 or dns.qry.name contains ".")',
+        'cleartext_creds': 'http.authorization || ftp.request.command || imap.request || pop.request || telnet',
+    }
+    filt=presets.get(preset)
+    if not filt:
+        return [TextContent(type='text', text=json.dumps(make_result('wireshark_filter_preset', False, diagnostics=['Unknown preset'])))]
+    payload=make_result('wireshark_filter_preset', True, method='local', data={'filter':filt,'preset':preset})
+    return [TextContent(type='text', text=json.dumps(payload, indent=2))]
+
+@server.list_tools()
+async def list_tools():  # type: ignore[override]
+    base = await _base_list_tools()
+    from mcp.types import Tool
+    extra=[
+        Tool(name='wireshark_tcp_flow_metrics', description='Per-flow TCP metrics: RTT percentiles and retransmission rates', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'top_n':{'type':'integer','default':10}},'required':['filepath']}),
+        Tool(name='wireshark_beaconing_detector', description='Detect periodic small flows (beaconing) using inter-arrival regularity', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'min_events':{'type':'integer','default':5}},'required':['filepath']}),
+        Tool(name='wireshark_dns_anomalies', description='Detect DNS anomalies: NXDOMAIN spikes, rare TLDs, long/base64 labels', inputSchema={'type':'object','properties':{'filepath':{'type':'string'}},'required':['filepath']}),
+        Tool(name='wireshark_http_exfil_anomalies', description='Detect large POST uploads and uncommon content-types', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'size_threshold':{'type':'integer','default':100000}},'required':['filepath']}),
+        Tool(name='wireshark_export_and_hash_objects', description='Export protocol objects then compute SHA256 hashes for files', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'protocol':{'type':'string','enum':['http','dicom','tftp','smb','imf'],'default':'http'},'destination':{'type':'string'}},'required':['filepath','protocol','destination']}),
+        Tool(name='wireshark_filter_preset', description='Return battle-tested filter presets for common blue/red operations', inputSchema={'type':'object','properties':{'preset':{'type':'string','enum':['c2_https','port_scan','lateral_smb','dns_tunnel','cleartext_creds']}},'required':['preset']}),
+    ]
+    return base + extra

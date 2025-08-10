@@ -362,3 +362,101 @@ def test_detect_cleartext_credentials(monkeypatch, tmp_path):
     assert payload["data"]["findings"]["ftp"] >= 1
     assert payload["data"]["findings"]["imap_pop"] >= 1
     assert payload["data"]["findings"]["telnet"] >= 1
+
+
+def test_tcp_flow_metrics(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'tcp.stream' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=(
+        b"0\t0.01\t\n"
+        b"0\t0.02\t1\n"
+        b"1\t0.10\t\n"
+    ))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    pcap = tmp_path / "f.pcap"; pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_tcp_flow_metrics
+    res = asyncio.get_event_loop().run_until_complete(handle_tcp_flow_metrics({"filepath": str(pcap), "top_n": 2}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["flows"]
+
+
+def test_beaconing_detector(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'frame.time_relative' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=(
+        b"1.1.1.1\t2.2.2.2\t0.0\t60\n"
+        b"1.1.1.1\t2.2.2.2\t5.0\t60\n"
+        b"1.1.1.1\t2.2.2.2\t10.0\t60\n"
+        b"1.1.1.1\t2.2.2.2\t15.0\t60\n"
+        b"1.1.1.1\t2.2.2.2\t20.0\t60\n"
+    ))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    pcap = tmp_path / "b2.pcap"; pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_beaconing_detector
+    res = asyncio.get_event_loop().run_until_complete(handle_beaconing_detector({"filepath": str(pcap), "min_events": 5}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["suspects"][0]["regularity"] > 0.5
+
+
+def test_dns_anomalies(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'dns' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=(
+        b"rare.tldx\t0\t\n"
+        b"abcdabcdabcdabcdabcd.example.com\t0\t\n"  # base-like label
+        b"name\t3\t\n"  # NXDOMAIN
+        b"foo.com\t0\tverylongtxtpayloadoverfiftycharacters................................\n"
+    ))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    pcap = tmp_path / "dns.pcap"; pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_dns_anomalies
+    res = asyncio.get_event_loop().run_until_complete(handle_dns_anomalies({"filepath": str(pcap)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["nxdomain"] >= 1
+    assert "tldx" in payload["data"]["rare_tlds"]
+
+
+def test_http_exfil_anomalies(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'http.request' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=(
+        b"exfil.com\tPOST\t200000\tapplication/octet-stream\t1.0\n"
+        b"ok.com\tGET\t10\ttext/html\t2.0\n"
+    ))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    pcap = tmp_path / "http.pcap"; pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_http_exfil_anomalies
+    res = asyncio.get_event_loop().run_until_complete(handle_http_exfil_anomalies({"filepath": str(pcap), "size_threshold": 100000}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert any(f["host"] == "exfil.com" for f in payload["data"]["findings"]) 
+
+
+def test_export_and_hash_objects(monkeypatch, tmp_path):
+    outdir = tmp_path / "out"; outdir.mkdir()
+    # Create files to hash after export
+    (outdir / "a.bin").write_bytes(b"A")
+    (outdir / "b.bin").write_bytes(b"BB")
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and '--export-objects' in cmd
+    fake = FakeProcess(0, stdout=b"")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    pcap = tmp_path / "obj.pcap"; pcap.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_export_and_hash_objects
+    res = asyncio.get_event_loop().run_until_complete(handle_export_and_hash_objects({
+        "filepath": str(pcap), "protocol": "http", "destination": str(outdir)
+    }))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert set(payload["data"]["hashes"].keys()) >= {"a.bin", "b.bin"}
+
+
+def test_filter_preset():
+    from wireshark_mcp.server import handle_filter_preset
+    res = asyncio.get_event_loop().run_until_complete(handle_filter_preset({"preset": "port_scan"}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert "tcp.flags.syn" in payload["data"]["filter"]

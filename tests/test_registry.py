@@ -30,6 +30,12 @@ def test_tools_registry_contains_expected():
         "wireshark_tcp_metrics",
         "wireshark_beaconing_exfil_detection",
         "wireshark_ioc_enrichment",
+        "wireshark_tcp_flow_metrics",
+        "wireshark_beaconing_detector",
+        "wireshark_dns_anomalies",
+        "wireshark_http_exfil_anomalies",
+        "wireshark_export_and_hash_objects",
+        "wireshark_filter_preset",
     }
     assert expected.issubset(set(tools))
 
