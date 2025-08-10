@@ -30,3 +30,30 @@ jobs:
       run: black --check .
     - name: Run tests
       run: pytest -q
+
+  integration:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Install tshark
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y tshark wget
+      - name: Download sample PCAP
+        run: |
+          mkdir -p /tmp/pcaps
+          wget -O /tmp/pcaps/http.cap https://gitlab.com/wireshark/wireshark/-/raw/master/test/captures/http.cap
+      - name: Run integration tests
+        env:
+          INTEGRATION: '1'
+          PCAP_PATH: /tmp/pcaps/http.cap
+        run: pytest -q tests/test_integration_tools.py
