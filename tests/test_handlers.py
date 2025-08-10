@@ -569,3 +569,68 @@ def test_tls_decrypt_sessions(monkeypatch, tmp_path):
     payload = json.loads(res[0].text)
     assert payload["ok"] is True
     assert payload["data"]["by_sni"][0][0] == "example.com"
+
+
+def test_tls_ech_detection(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'tls.handshake' in ' '.join(cmd) and 'tls.extension.type' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=b"encrypted_client_hello\nother\n0xfe0d\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "ech.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_tls_ech_detection
+    res = asyncio.get_event_loop().run_until_complete(handle_tls_ech_detection({"filepath": str(p)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["ech_suspected"] >= 2
+
+
+def test_http_h2_h3_anomalies(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and ('http2' in ' '.join(cmd) or 'http3' in ' '.join(cmd))
+    fake = FakeProcess(0, stdout=b"h2\ta.example\t\tcurl/8.0\t\t\t/very/long/path" + b"x"*210 + b"\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "h23.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_http_h2_h3_anomalies
+    res = asyncio.get_event_loop().run_until_complete(handle_http_h2_h3_anomalies({"filepath": str(p), "path_length_threshold": 200}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["anomalies"]
+
+
+def test_dns_sequence_anomalies(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'dns' in ' '.join(cmd) and 'frame.time_relative' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=b"ex.example\t0.00\nex.example\t0.50\nex.example\t0.80\nex.example\t1.20\nex.example\t1.90\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "dnsseq.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_dns_sequence_anomalies
+    res = asyncio.get_event_loop().run_until_complete(handle_dns_sequence_anomalies({"filepath": str(p), "window_seconds": 2.0, "burst_min": 5}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["bursty_domains"]
+
+
+def test_c2_signature_scan(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and '-e' in cmd
+    fake = FakeProcess(0, stdout=b"Mozilla\t/jquery-3.3.1.min.js\t\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "c2.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_c2_signature_scan
+    res = asyncio.get_event_loop().run_until_complete(handle_c2_signature_scan({"filepath": str(p)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["matches"]
+
+
+def test_ja4_fingerprints(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and 'tls.handshake' in ' '.join(cmd) and 'tls.handshake.ja3' in ' '.join(cmd)
+    fake = FakeProcess(0, stdout=b"3.3.3.3\t443\tja3hash\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+    p = tmp_path / "ja4.pcap"; p.write_bytes(b"\x00\x00")
+    from wireshark_mcp.server import handle_ja4_fingerprints
+    res = asyncio.get_event_loop().run_until_complete(handle_ja4_fingerprints({"filepath": str(p)}))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["entries"][0]["ja4"].startswith("ja4:")

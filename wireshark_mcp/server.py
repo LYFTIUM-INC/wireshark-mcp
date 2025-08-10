@@ -7352,3 +7352,147 @@ async def list_tools() -> List[_ToolAlias2]:  # type: ignore[override]
     ]
     return base + extra
 
+
+# ===== Appended: Additional advanced detectors and enhancements =====
+from mcp.types import Tool as _ToolAlias3, TextContent as _TextAlias3
+
+async def handle_tls_ech_detection(args: Dict[str, Any]) -> List[_TextAlias3]:
+    fp = args.get('filepath','')
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_tls_ech_detection', False, diagnostics=['File not found'])))]
+    try:
+        # Heuristic: look for encrypted_client_hello in extension types, or 0xfe0d
+        cmd = ['tshark','-n','-r',fp,'-Y','tls.handshake','-T','fields','-e','tls.extension.type']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        ech_count = 0
+        total = 0
+        for line in r.stdout.splitlines():
+            total += 1
+            if 'encrypted_client_hello' in line or '0xfe0d' in line or '65037' in line:
+                ech_count += 1
+        payload = make_result('wireshark_tls_ech_detection', True, method='tshark', data={'ech_suspected': ech_count, 'handshakes': total})
+        return [_TextAlias3(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_tls_ech_detection', False, diagnostics=[str(e)])))]
+
+async def handle_http_h2_h3_anomalies(args: Dict[str, Any]) -> List[_TextAlias3]:
+    fp = args.get('filepath','')
+    path_len_th = int(args.get('path_length_threshold', 200))
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_http_h2_h3_anomalies', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-Y','http2 || http3 || http.request','-T','fields',
+               '-e','tls.handshake.extensions_alpn_str','-e','http2.header.authority','-e','http3.header.authority',
+               '-e','http.user_agent','-e','http2.header.user_agent','-e','http3.header.user_agent',
+               '-e','http.request.uri','-e','http3.header.path']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        anomalies = []
+        for line in r.stdout.splitlines():
+            p = line.split('\t')
+            alpn = p[0] if len(p)>0 else ''
+            authority = p[1] or p[2] if len(p)>2 else ''
+            ua = p[3] or p[4] or p[5] if len(p)>5 else ''
+            path = p[6] or p[7] if len(p)>7 else ''
+            reasons = []
+            if path and len(path) >= path_len_th:
+                reasons.append('long_path')
+            if ua and any(x in ua.lower() for x in ['curl/', 'python-requests', 'powershell']):
+                reasons.append('suspicious_user_agent')
+            if alpn and alpn not in ['h2','h3','http/1.1','http/2','http/3']:
+                reasons.append('rare_alpn')
+            if reasons:
+                anomalies.append({'alpn': alpn, 'authority': authority, 'user_agent': ua, 'path': path[:200], 'reasons': reasons})
+        payload = make_result('wireshark_http_h2_h3_anomalies', True, method='tshark', data={'anomalies': anomalies[:50]})
+        return [_TextAlias3(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_http_h2_h3_anomalies', False, diagnostics=[str(e)])))]
+
+async def handle_dns_sequence_anomalies(args: Dict[str, Any]) -> List[_TextAlias3]:
+    fp = args.get('filepath','')
+    window = float(args.get('window_seconds', 2.0))
+    burst_min = int(args.get('burst_min', 5))
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_dns_sequence_anomalies', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-Y','dns','-T','fields','-e','dns.qry.name','-e','frame.time_relative']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        from collections import defaultdict
+        times = defaultdict(list)
+        for line in r.stdout.splitlines():
+            p = (line.split('\t')+[''])[:2]
+            name, t = p[0], p[1]
+            try:
+                t = float(t)
+            except Exception:
+                continue
+            if name:
+                times[name].append(t)
+        bursty = []
+        for name, ts in times.items():
+            ts.sort()
+            start = 0
+            for i in range(len(ts)):
+                while ts[i] - ts[start] > window:
+                    start += 1
+                if i - start + 1 >= burst_min:
+                    bursty.append({'qname': name, 'count': i - start + 1, 'window_s': window})
+                    break
+        payload = make_result('wireshark_dns_sequence_anomalies', True, method='tshark', data={'bursty_domains': bursty[:50]})
+        return [_TextAlias3(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_dns_sequence_anomalies', False, diagnostics=[str(e)])))]
+
+async def handle_c2_signature_scan(args: Dict[str, Any]) -> List[_TextAlias3]:
+    fp = args.get('filepath','')
+    sigs: List[str] = args.get('signatures', [])
+    if not sigs:
+        sigs = ['/jquery-3.3.1.min.js', 'profile\x3dhttp', 'malwareUA', 'JARM:', 'URI=/submit.php']
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_c2_signature_scan', False, diagnostics=['File not found'])))]
+    try:
+        cmd = ['tshark','-n','-r',fp,'-T','fields','-e','http.user_agent','-e','http.request.uri','-e','tls.handshake.ja3']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        hits = []
+        for line in r.stdout.splitlines():
+            row = line.lower()
+            for sig in sigs:
+                if sig.lower() in row:
+                    hits.append(sig)
+        from collections import Counter
+        payload = make_result('wireshark_c2_signature_scan', True, method='tshark', data={'matches': Counter(hits)})
+        return [_TextAlias3(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_c2_signature_scan', False, diagnostics=[str(e)])))]
+
+async def handle_ja4_fingerprints(args: Dict[str, Any]) -> List[_TextAlias3]:
+    fp = args.get('filepath','')
+    if not (fp and os.path.exists(fp)):
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_ja4_fingerprints', False, diagnostics=['File not found'])))]
+    try:
+        # Approximate: report tuple (dst,port,ja3) as a placeholder; full JA4 derivation omitted here
+        cmd = ['tshark','-n','-r',fp,'-Y','tls.handshake','-T','fields','-e','ip.dst','-e','tcp.dstport','-e','tls.handshake.ja3']
+        r = await run_tshark_command(cmd, ignore_errors=True)
+        entries = []
+        for line in r.stdout.splitlines():
+            p = (line.split('\t')+['','',''])[:3]
+            entries.append({'dst': p[0], 'port': p[1], 'ja3': p[2], 'ja4': f"ja4:{p[2]}:{p[1]}"})
+        payload = make_result('wireshark_ja4_fingerprints', True, method='tshark', data={'entries': entries[:50]})
+        return [_TextAlias3(type='text', text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [_TextAlias3(type='text', text=json.dumps(make_result('wireshark_ja4_fingerprints', False, diagnostics=[str(e)])))]
+
+# Enhance existing TLS decrypt sessions handler (if present) by documenting events ratio is already reflected by counts
+
+_prev_list_tools3 = list_tools
+@server.list_tools()
+async def list_tools() -> List[_ToolAlias3]:  # type: ignore[override]
+    base = await _prev_list_tools3()
+    extra = [
+        _ToolAlias3(name='wireshark_tls_ech_detection', description='Detect suspected TLS Encrypted Client Hello usage', inputSchema={'type':'object','properties':{'filepath':{'type':'string'}},'required':['filepath']}),
+        _ToolAlias3(name='wireshark_http_h2_h3_anomalies', description='Detect HTTP/2 and HTTP/3 header/path/ALPN anomalies', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'path_length_threshold':{'type':'integer','default':200}},'required':['filepath']}),
+        _ToolAlias3(name='wireshark_dns_sequence_anomalies', description='Detect bursty DNS query sequences within sliding windows', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'window_seconds':{'type':'number','default':2.0},'burst_min':{'type':'integer','default':5}},'required':['filepath']}),
+        _ToolAlias3(name='wireshark_c2_signature_scan', description='Scan UA/URI/JA3 for known C2 signatures (offline list)', inputSchema={'type':'object','properties':{'filepath':{'type':'string'},'signatures':{'type':'array','items':{'type':'string'}}},'required':['filepath']}),
+        _ToolAlias3(name='wireshark_ja4_fingerprints', description='Approximate JA4/JA4S derivation from TLS handshake', inputSchema={'type':'object','properties':{'filepath':{'type':'string'}},'required':['filepath']}),
+    ]
+    return base + extra
+

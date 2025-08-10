@@ -44,6 +44,11 @@ def test_tools_registry_contains_expected():
         "wireshark_icmp_exfil_detection",
         "wireshark_quic_spin_rtt_metrics",
         "wireshark_tls_decrypt_sessions",
+        "wireshark_tls_ech_detection",
+        "wireshark_http_h2_h3_anomalies",
+        "wireshark_dns_sequence_anomalies",
+        "wireshark_c2_signature_scan",
+        "wireshark_ja4_fingerprints",
     }
     assert expected.issubset(set(tools))
 
