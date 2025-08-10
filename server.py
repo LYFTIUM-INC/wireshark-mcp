@@ -31,12 +31,13 @@ from mcp.types import (
     TextContent,
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Configure logging only if not already configured or explicitly requested
 logger = logging.getLogger(__name__)
+if os.getenv("WIRESHARK_MCP_CONFIGURE_LOGGING") == "1" or not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
 
 # Initialize the MCP server
 server = Server("wireshark-mcp-enhanced")
