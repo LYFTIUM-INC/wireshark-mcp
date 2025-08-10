@@ -40,7 +40,7 @@ if os.getenv("WIRESHARK_MCP_CONFIGURE_LOGGING") == "1" or not logging.getLogger(
     )
 
 # Initialize the MCP server
-server = Server("wireshark-mcp-enhanced")
+server = Server("wireshark-mcp")
 
 # Global state for active captures
 ACTIVE_CAPTURES = {}
@@ -224,7 +224,7 @@ async def list_tools() -> List[Tool]:
         # ENHANCED: PCAP File Analysis with more features
         Tool(
             name="wireshark_analyze_pcap_enhanced",
-            description="Enhanced PCAP file analysis with streaming support for large files",
+            description="Advanced PCAP file analysis with streaming support for large files",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -426,6 +426,19 @@ async def handle_realtime_json_capture(args: Dict[str, Any]) -> List[TextContent
             text=f"❌ **Real-time Capture Failed**\n\nError: {str(e)}\n\nTroubleshooting:\n- Verify interface with: ip link show\n- Check permissions: groups $USER\n- Ensure TShark supports JSON: tshark -T ek -h"
         )]
 
+# Result schema helper
+
+def make_result(tool: str, ok: bool, method: str = "", data: Dict[str, Any] | None = None,
+                diagnostics: List[str] | None = None, recommendations: List[str] | None = None) -> Dict[str, Any]:
+    return {
+        "ok": ok,
+        "tool": tool,
+        "method": method,
+        "data": data or {},
+        "diagnostics": diagnostics or [],
+        "recommendations": recommendations or [],
+    }
+
 async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
     """Generate comprehensive protocol statistics and conversation analysis."""
     source = args.get("source", "")
@@ -434,7 +447,8 @@ async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
     time_interval = args.get("time_interval", 60)
     
     if not source:
-        return [TextContent(type="text", text="❌ Error: No source specified")]
+        payload = make_result("wireshark_protocol_statistics", False, data={}, diagnostics=["Missing source"])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     
     statistics_results = {}
     
@@ -511,27 +525,12 @@ async def handle_protocol_statistics(args: Dict[str, Any]) -> List[TextContent]:
             "timestamp": datetime.now().isoformat(),
             "statistics": statistics_results
         }
-        
-        # Add insights
-        if "protocol_hierarchy" in statistics_results:
-            ph = statistics_results["protocol_hierarchy"]
-            if ph.get("total_packets"):
-                summary["insights"] = {
-                    "total_packets": ph["total_packets"],
-                    "total_bytes": ph.get("total_bytes", "unknown"),
-                    "dominant_protocol": max(ph.get("protocols", {}), key=lambda k: ph["protocols"].get(k, {}).get("packets", 0)) if ph.get("protocols") else "none"
-                }
-        
-        return [TextContent(
-            type="text",
-            text=f"📊 **Protocol Statistics & Conversation Analysis**\n\n```json\n{json.dumps(summary, indent=2)}\n```"
-        )]
+        payload = make_result("wireshark_protocol_statistics", True, method="tshark", data=summary)
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
         
     except Exception as e:
-        return [TextContent(
-            type="text",
-            text=f"❌ **Statistics Generation Failed**\n\nError: {str(e)}"
-        )]
+        payload = make_result("wireshark_protocol_statistics", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
 async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent]:
     """Enhanced PCAP file analysis with streaming support for large files."""
@@ -541,7 +540,8 @@ async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent
     output_format = args.get("output_format", "json")
     
     if not filepath or not os.path.exists(filepath):
-        return [TextContent(type="text", text="❌ Error: File not found")]
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=["File not found"]) 
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
     
     file_size = os.path.getsize(filepath)
     analysis_results = {
@@ -639,22 +639,20 @@ async def handle_analyze_pcap_enhanced(args: Dict[str, Any]) -> List[TextContent
         
         # Format output
         if output_format == "json":
-            return [TextContent(
-                type="text",
-                text=f"📊 **Enhanced PCAP Analysis Results**\n\n```json\n{json.dumps(analysis_results, indent=2)}\n```"
-            )]
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data=analysis_results)
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
         elif output_format == "summary":
             summary = generate_analysis_summary(analysis_results)
-            return [TextContent(type="text", text=summary)]
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"summary": summary})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
         else:  # text
             text_output = generate_text_report(analysis_results)
-            return [TextContent(type="text", text=text_output)]
+            payload = make_result("wireshark_analyze_pcap_enhanced", True, method="tshark", data={"text": text_output})
+            return [TextContent(type="text", text=json.dumps(payload, indent=2))]
             
     except Exception as e:
-        return [TextContent(
-            type="text",
-            text=f"❌ **PCAP Analysis Failed**\n\nError: {str(e)}"
-        )]
+        payload = make_result("wireshark_analyze_pcap_enhanced", False, diagnostics=[str(e)])
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
 
 # Helper functions
 
@@ -1352,11 +1350,14 @@ async def perform_live_capture_enhanced(interface: str, duration: int, filter_ex
     """Enhanced live capture with multiple fallback methods for extended duration support."""
     
     capture_start_time = asyncio.get_event_loop().time()
+    ring_files = int(os.getenv("WIRESHARK_RING_FILES", "5"))
+    ring_megabytes = int(os.getenv("WIRESHARK_RING_MB", "10"))
     
     # Method 1: Try traditional tshark first
     try:
         cmd = [
-            'tshark', 
+            'tshark',
+            '-n',  # no name resolution
             '-i', interface,
             '-c', str(max_packets),
             '-a', f'duration:{duration}',
@@ -1422,6 +1423,9 @@ async def _enhanced_capture_fallback(
     """Enhanced fallback capture methods for when tshark fails due to permissions."""
     import tempfile
     
+    ring_files = int(os.getenv("WIRESHARK_RING_FILES", "5"))
+    ring_megabytes = int(os.getenv("WIRESHARK_RING_MB", "10"))
+    
     # Method 2: Try tcpdump + tshark analysis (most reliable fallback)
     try:
         with tempfile.NamedTemporaryFile(suffix='.pcap', delete=False) as tmp:
@@ -1430,9 +1434,11 @@ async def _enhanced_capture_fallback(
         # Build tcpdump command
         cmd = [
             'timeout', str(duration + 10),  # Add buffer time
-            'tcpdump', '-i', interface,
+            'tcpdump', '-n', '-i', interface,
             '-w', pcap_file,
             '-c', str(max_packets),
+            '-C', str(ring_megabytes),
+            '-W', str(ring_files),
             '-q'
         ]
         
@@ -1450,7 +1456,7 @@ async def _enhanced_capture_fallback(
         
         if proc.returncode in [0, 124]:  # Success or timeout (expected)
             # Parse with tshark
-            parse_cmd = ['tshark', '-r', pcap_file, '-T', 'json', '-c', str(min(10, max_packets))]
+            parse_cmd = ['tshark', '-n', '-r', pcap_file, '-T', 'json', '-c', str(min(10, max_packets))]
             parse_proc = await asyncio.create_subprocess_exec(
                 *parse_cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -1927,8 +1933,8 @@ def generate_contextual_suggestions(description: str, matched_patterns: List[str
 
 async def main():
     """Main server entry point."""
-    logger.info("🦈 Starting Enhanced Wireshark MCP Server v2.0")
-    logger.info("✨ Features: JSON Capture, Protocol Statistics, Enhanced Analysis")
+    logger.info("🦈 Starting Wireshark MCP Server")
+    logger.info("✨ Features: JSON Capture, Protocol Statistics, Advanced Analysis")
     logger.info("📊 Total Tools Available: 8")
     
     async with stdio_server() as (read_stream, write_stream):

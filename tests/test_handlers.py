@@ -46,7 +46,10 @@ def test_protocol_statistics_io_stats(monkeypatch, tmp_path):
     }
     result = asyncio.get_event_loop().run_until_complete(handle_protocol_statistics(args))
     assert result and result[0].type == "text"
-    assert "io_statistics" in result[0].text
+    payload = json.loads(result[0].text)
+    assert payload["ok"] is True
+    assert payload["tool"] == "wireshark_protocol_statistics"
+    assert "io_statistics" in payload["data"]["statistics"]
 
 
 def test_analyze_pcap_enhanced_json_output(monkeypatch, tmp_path):
@@ -78,4 +81,7 @@ def test_analyze_pcap_enhanced_json_output(monkeypatch, tmp_path):
     }
     result = asyncio.get_event_loop().run_until_complete(handle_analyze_pcap_enhanced(args))
     assert result and result[0].type == "text"
-    assert "file_info" in result[0].text
+    payload = json.loads(result[0].text)
+    assert payload["ok"] is True
+    assert payload["tool"] == "wireshark_analyze_pcap_enhanced"
+    assert "file_info" in payload["data"]
