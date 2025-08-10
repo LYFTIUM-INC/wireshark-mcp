@@ -250,25 +250,43 @@ async def list_tools() -> List[Tool]:
                     },
                     "analysis_type": {
                         "type": "string",
-                        "enum": ["quick", "comprehensive", "security", "performance", "conversations", "statistics"],
+                        "enum": ["quick", "comprehensive", "security", "performance"],
                         "description": "Type of analysis to perform",
                         "default": "comprehensive"
-                    },
-                    "chunk_size": {
-                        "type": "integer",
-                        "description": "Number of packets to process at once (for large files)",
-                        "default": 10000
-                    },
-                    "output_format": {
-                        "type": "string",
-                        "enum": ["text", "json", "summary"],
-                        "description": "Output format for analysis results",
-                        "default": "json"
                     }
                 },
                 "required": ["filepath"]
             }
-        )
+        ),
+        # New: Export protocol objects from PCAP
+        Tool(
+            name="wireshark_export_objects",
+            description="Export protocol objects (e.g., HTTP files) from a PCAP to a directory",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string", "description": "Path to PCAP/PCAPNG file"},
+                    "protocol": {"type": "string", "enum": ["http", "dicom", "tftp", "smb", "imf"], "default": "http"},
+                    "destination": {"type": "string", "description": "Output directory to write objects"}
+                },
+                "required": ["filepath", "protocol", "destination"]
+            }
+        ),
+        # New: Follow a stream and extract ASCII payload
+        Tool(
+            name="wireshark_follow_stream",
+            description="Follow a TCP/UDP stream and return ASCII payload (first N bytes)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string"},
+                    "protocol": {"type": "string", "enum": ["tcp", "udp"], "default": "tcp"},
+                    "stream_index": {"type": "integer", "default": 0},
+                    "bytes_limit": {"type": "integer", "default": 4096}
+                },
+                "required": ["filepath"]
+            }
+        ),
     ]
 
 @server.call_tool()
@@ -296,6 +314,10 @@ async def call_tool(name: str, arguments: Dict[str, Any]) -> List[TextContent]:
             return await handle_protocol_statistics(arguments)
         elif name == "wireshark_analyze_pcap_enhanced":
             return await handle_analyze_pcap_enhanced(arguments)
+        elif name == "wireshark_export_objects":
+            return await handle_export_objects(arguments)
+        elif name == "wireshark_follow_stream":
+            return await handle_follow_stream(arguments)
         
         else:
             return [TextContent(type="text", text=f"❌ Unknown tool: {name}")]
@@ -1927,6 +1949,45 @@ async def main():
             write_stream,
             server.create_initialization_options()
         )
+
+async def handle_export_objects(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "http")
+    destination = args.get("destination", "")
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["File not found"])))]
+    if not destination:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=["Missing destination directory"])))]
+    os.makedirs(destination, exist_ok=True)
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '--export-objects', f'{protocol},{destination}', '-q']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        files = sorted(os.listdir(destination))
+        payload = make_result("wireshark_export_objects", True, method="tshark", data={"protocol": protocol, "destination": destination, "files": files, "exit_code": result.returncode})
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_export_objects", False, diagnostics=[str(e)])))]
+
+async def handle_follow_stream(args: Dict[str, Any]) -> List[TextContent]:
+    filepath = args.get("filepath", "")
+    protocol = args.get("protocol", "tcp")
+    stream_index = int(args.get("stream_index", 0))
+    bytes_limit = int(args.get("bytes_limit", 4096))
+    if not (filepath and os.path.exists(filepath)):
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=["File not found"])))]
+    try:
+        cmd = ['tshark', '-n', '-r', filepath, '-q', '-z', f'follow,{protocol},ascii,{stream_index}']
+        result = await run_tshark_command(cmd, ignore_errors=False)
+        text = result.stdout
+        payload_text = text[:bytes_limit]
+        payload = make_result("wireshark_follow_stream", True, method="tshark", data={
+            "protocol": protocol,
+            "stream_index": stream_index,
+            "bytes": payload_text
+        })
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+    except Exception as e:
+        return [TextContent(type="text", text=json.dumps(make_result("wireshark_follow_stream", False, diagnostics=[str(e)])))]
 
 if __name__ == "__main__":
     asyncio.run(main())

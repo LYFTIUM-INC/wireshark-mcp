@@ -184,3 +184,50 @@ def test_live_capture_quick_triage_and_ring(monkeypatch):
     assert payload["ok"] in [True, False]  # envelope present
     # Ensure tshark was invoked (with -n)
     assert any(c[0] == "tshark" and "-n" in c for c in call_log)
+
+
+def test_export_objects(monkeypatch, tmp_path):
+    # Mock tshark export writing files by simulating command success
+    outputs_dir = tmp_path / "out"
+    outputs_dir.mkdir()
+    # Pre-create files to simulate export
+    (outputs_dir / "file1.bin").write_bytes(b"a")
+    (outputs_dir / "file2.bin").write_bytes(b"b")
+
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and "--export-objects" in cmd
+
+    fake = FakeProcess(returncode=0, stdout=b"")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+
+    # Need a pcap file to exist
+    pcap = tmp_path / "a.pcap"
+    pcap.write_bytes(b"\x00\x00")
+
+    from wireshark_mcp.server import handle_export_objects
+    res = asyncio.get_event_loop().run_until_complete(handle_export_objects({
+        "filepath": str(pcap), "protocol": "http", "destination": str(outputs_dir)
+    }))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert set(payload["data"]["files"]) >= {"file1.bin", "file2.bin"}
+
+
+def test_follow_stream(monkeypatch, tmp_path):
+    def is_tshark(cmd):
+        return len(cmd) and cmd[0] == "tshark" and "follow," in ",".join(cmd)
+
+    fake_out = b"some stream payload text"
+    fake = FakeProcess(returncode=0, stdout=fake_out)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", make_create_subprocess_exec_mock([(is_tshark, fake)]))
+
+    pcap = tmp_path / "b.pcap"
+    pcap.write_bytes(b"\x00\x00")
+
+    from wireshark_mcp.server import handle_follow_stream
+    res = asyncio.get_event_loop().run_until_complete(handle_follow_stream({
+        "filepath": str(pcap), "protocol": "tcp", "stream_index": 0, "bytes_limit": 10
+    }))
+    payload = json.loads(res[0].text)
+    assert payload["ok"] is True
+    assert payload["data"]["bytes"]
