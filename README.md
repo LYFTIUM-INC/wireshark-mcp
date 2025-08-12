@@ -34,7 +34,7 @@ choco install wireshark python3
 
 ### **Installation**
 ```bash
-git clone https://github.com/your-username/wireshark-mcp.git
+git clone https://github.com/priestlypython/wireshark-mcp.git
 cd wireshark-mcp
 pip install -r requirements.txt
 
