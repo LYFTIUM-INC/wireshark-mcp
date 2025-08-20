@@ -1,0 +1,126 @@
+{
+  "id": "report_nist_1755692490007",
+  "framework": "nist",
+  "generatedAt": "2025-08-20T12:21:30.007Z",
+  "period": {
+    "start": "2025-07-21T12:21:30.007Z",
+    "end": "2025-08-20T12:21:30.007Z"
+  },
+  "overallStatus": "compliant",
+  "score": 100,
+  "controls": {
+    "total": 2,
+    "compliant": 2,
+    "nonCompliant": 0,
+    "partiallyCompliant": 0,
+    "notApplicable": 0
+  },
+  "violations": [],
+  "recommendations": [
+    "Develop and maintain a comprehensive system security plan",
+    "Implement continuous monitoring capabilities for all critical systems"
+  ],
+  "executiveSummary": "NIST Compliance Assessment Executive Summary\n\nOverall Compliance Score: 100%\nStatus: COMPLIANT\n\nControl Implementation:\n- Total Controls: 2\n- Fully Compliant: 2 (100%)\n- Partially Compliant: 0 (0%)\n- Non-Compliant: 0 (0%)\n\nKey Findings:\n- Strong implementation of technical controls including encryption and access management\n- Audit logging and monitoring capabilities meet nist requirements\n- Opportunities for improvement in documentation and procedural controls\n\nThe organization demonstrates a mature compliance posture \nwith respect to nist requirements.",
+  "detailedFindings": {
+    "controlResults": [
+      {
+        "control": {
+          "id": "nist-ac-2",
+          "name": "Account Management",
+          "description": "The organization manages information system accounts",
+          "category": "access_control",
+          "frameworks": [
+            "nist"
+          ],
+          "requirements": [
+            "Account creation approval process",
+            "Account modification tracking",
+            "Account termination procedures",
+            "Privileged account management"
+          ],
+          "implementationStatus": "compliant",
+          "evidenceRequired": [
+            "Account management procedures",
+            "Account audit logs"
+          ],
+          "automatedChecks": true,
+          "lastAssessed": "2025-08-09T04:25:18.272Z",
+          "nextReview": "2026-02-05T04:25:18.272Z",
+          "responsible": "IT Administration",
+          "priority": "high"
+        },
+        "status": "compliant",
+        "evidence": [],
+        "gaps": []
+      },
+      {
+        "control": {
+          "id": "nist-au-2",
+          "name": "Audit Events",
+          "description": "The organization determines that the information system is capable of auditing defined events",
+          "category": "audit_logging",
+          "frameworks": [
+            "nist"
+          ],
+          "requirements": [
+            "Comprehensive audit logging",
+            "Log retention policies",
+            "Log integrity protection",
+            "Audit log review procedures"
+          ],
+          "implementationStatus": "compliant",
+          "evidenceRequired": [
+            "Audit configuration",
+            "Log samples",
+            "Retention policies"
+          ],
+          "automatedChecks": true,
+          "lastAssessed": "2025-08-09T04:25:18.272Z",
+          "nextReview": "2026-02-05T04:25:18.272Z",
+          "responsible": "Security Team",
+          "priority": "critical"
+        },
+        "status": "compliant",
+        "evidence": [
+          {
+            "type": "audit_logs_24h",
+            "count": 1272
+          }
+        ],
+        "gaps": []
+      }
+    ],
+    "evidenceGathered": {
+      "auditLogs": 4771,
+      "credentialRotations": [],
+      "activeAlerts": [],
+      "systemHealth": {
+        "totalErrors": 0,
+        "errorsByType": {},
+        "activeAlertsCount": 0,
+        "alertsByLevel": {
+          "info": 0,
+          "warning": 0,
+          "error": 0,
+          "critical": 0
+        },
+        "systemHealth": {
+          "overallStatus": "healthy",
+          "errorRate": 0,
+          "topErrors": []
+        }
+      }
+    },
+    "riskAssessment": {
+      "high": [],
+      "medium": [],
+      "low": []
+    }
+  },
+  "evidence": {
+    "auditLogs": 4315,
+    "securityScans": 0,
+    "policyDocuments": 0,
+    "incidents": 0
+  }
+}

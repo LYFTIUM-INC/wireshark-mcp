@@ -1,0 +1,127 @@
+{
+  "id": "report_gdpr_1755200796302",
+  "framework": "gdpr",
+  "generatedAt": "2025-08-14T19:46:36.302Z",
+  "period": {
+    "start": "2025-07-15T19:46:36.302Z",
+    "end": "2025-08-14T19:46:36.302Z"
+  },
+  "overallStatus": "compliant",
+  "score": 100,
+  "controls": {
+    "total": 2,
+    "compliant": 2,
+    "nonCompliant": 0,
+    "partiallyCompliant": 0,
+    "notApplicable": 0
+  },
+  "violations": [],
+  "recommendations": [
+    "Conduct privacy impact assessments for all new data processing activities",
+    "Implement automated data subject request handling procedures"
+  ],
+  "executiveSummary": "GDPR Compliance Assessment Executive Summary\n\nOverall Compliance Score: 100%\nStatus: COMPLIANT\n\nControl Implementation:\n- Total Controls: 2\n- Fully Compliant: 2 (100%)\n- Partially Compliant: 0 (0%)\n- Non-Compliant: 0 (0%)\n\nKey Findings:\n- Strong implementation of technical controls including encryption and access management\n- Audit logging and monitoring capabilities meet gdpr requirements\n- Opportunities for improvement in documentation and procedural controls\n\nThe organization demonstrates a mature compliance posture \nwith respect to gdpr requirements.",
+  "detailedFindings": {
+    "controlResults": [
+      {
+        "control": {
+          "id": "gdpr-art32",
+          "name": "Security of Processing",
+          "description": "Implementation of appropriate technical and organizational measures",
+          "category": "data_encryption",
+          "frameworks": [
+            "gdpr"
+          ],
+          "requirements": [
+            "Encryption of personal data",
+            "Pseudonymization where appropriate",
+            "Regular security testing",
+            "Data breach procedures"
+          ],
+          "implementationStatus": "compliant",
+          "evidenceRequired": [
+            "Encryption policies",
+            "Security test results",
+            "Breach procedures"
+          ],
+          "automatedChecks": true,
+          "lastAssessed": "2025-08-12T19:46:36.286Z",
+          "nextReview": "2025-11-10T19:46:36.286Z",
+          "responsible": "Data Protection Officer",
+          "priority": "critical"
+        },
+        "status": "compliant",
+        "evidence": [
+          {
+            "type": "encryption_enabled",
+            "value": true
+          }
+        ],
+        "gaps": []
+      },
+      {
+        "control": {
+          "id": "gdpr-art25",
+          "name": "Data Protection by Design",
+          "description": "Implementation of data protection principles by design and by default",
+          "category": "privacy_protection",
+          "frameworks": [
+            "gdpr"
+          ],
+          "requirements": [
+            "Privacy impact assessments",
+            "Data minimization",
+            "Purpose limitation",
+            "Privacy-enhancing technologies"
+          ],
+          "implementationStatus": "partially_compliant",
+          "evidenceRequired": [
+            "Privacy assessments",
+            "Data flow diagrams",
+            "Technical measures"
+          ],
+          "automatedChecks": false,
+          "lastAssessed": "2025-08-12T19:46:36.286Z",
+          "nextReview": "2025-11-10T19:46:36.286Z",
+          "responsible": "Data Protection Officer",
+          "priority": "high"
+        },
+        "status": "compliant",
+        "evidence": [],
+        "gaps": []
+      }
+    ],
+    "evidenceGathered": {
+      "auditLogs": 4741,
+      "credentialRotations": [],
+      "activeAlerts": [],
+      "systemHealth": {
+        "totalErrors": 0,
+        "errorsByType": {},
+        "activeAlertsCount": 0,
+        "alertsByLevel": {
+          "info": 0,
+          "warning": 0,
+          "error": 0,
+          "critical": 0
+        },
+        "systemHealth": {
+          "overallStatus": "healthy",
+          "errorRate": 0,
+          "topErrors": []
+        }
+      }
+    },
+    "riskAssessment": {
+      "high": [],
+      "medium": [],
+      "low": []
+    }
+  },
+  "evidence": {
+    "auditLogs": 1601,
+    "securityScans": 0,
+    "policyDocuments": 0,
+    "incidents": 0
+  }
+}

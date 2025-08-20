@@ -1,0 +1,132 @@
+{
+  "id": "report_soc2_1755200796301",
+  "framework": "soc2",
+  "generatedAt": "2025-08-14T19:46:36.301Z",
+  "period": {
+    "start": "2025-07-15T19:46:36.301Z",
+    "end": "2025-08-14T19:46:36.301Z"
+  },
+  "overallStatus": "compliant",
+  "score": 100,
+  "controls": {
+    "total": 2,
+    "compliant": 2,
+    "nonCompliant": 0,
+    "partiallyCompliant": 0,
+    "notApplicable": 0
+  },
+  "violations": [],
+  "recommendations": [
+    "Implement quarterly access reviews for all privileged accounts",
+    "Establish a formal incident response plan with defined escalation procedures"
+  ],
+  "executiveSummary": "SOC2 Compliance Assessment Executive Summary\n\nOverall Compliance Score: 100%\nStatus: COMPLIANT\n\nControl Implementation:\n- Total Controls: 2\n- Fully Compliant: 2 (100%)\n- Partially Compliant: 0 (0%)\n- Non-Compliant: 0 (0%)\n\nKey Findings:\n- Strong implementation of technical controls including encryption and access management\n- Audit logging and monitoring capabilities meet soc2 requirements\n- Opportunities for improvement in documentation and procedural controls\n\nThe organization demonstrates a mature compliance posture \nwith respect to soc2 requirements.",
+  "detailedFindings": {
+    "controlResults": [
+      {
+        "control": {
+          "id": "soc2-cc6.1",
+          "name": "Logical and Physical Access Controls",
+          "description": "The entity implements logical access security software, infrastructure, and architectures over protected information assets",
+          "category": "access_control",
+          "frameworks": [
+            "soc2"
+          ],
+          "requirements": [
+            "Multi-factor authentication for privileged accounts",
+            "Regular access reviews",
+            "Principle of least privilege",
+            "Session timeout controls"
+          ],
+          "implementationStatus": "compliant",
+          "evidenceRequired": [
+            "Access logs",
+            "MFA configuration",
+            "Access review reports"
+          ],
+          "automatedChecks": true,
+          "lastAssessed": "2025-08-12T19:46:36.286Z",
+          "nextReview": "2025-11-10T19:46:36.286Z",
+          "responsible": "Security Team",
+          "priority": "critical"
+        },
+        "status": "compliant",
+        "evidence": [
+          {
+            "type": "mfa_enabled",
+            "value": true
+          }
+        ],
+        "gaps": []
+      },
+      {
+        "control": {
+          "id": "soc2-cc7.2",
+          "name": "System Monitoring",
+          "description": "The entity monitors system components and the quality of system outputs",
+          "category": "security_monitoring",
+          "frameworks": [
+            "soc2"
+          ],
+          "requirements": [
+            "Real-time security monitoring",
+            "Log aggregation and analysis",
+            "Anomaly detection",
+            "Incident alerting"
+          ],
+          "implementationStatus": "compliant",
+          "evidenceRequired": [
+            "Monitoring logs",
+            "Alert configurations",
+            "Incident reports"
+          ],
+          "automatedChecks": true,
+          "lastAssessed": "2025-08-12T19:46:36.286Z",
+          "nextReview": "2025-11-10T19:46:36.286Z",
+          "responsible": "Operations Team",
+          "priority": "high"
+        },
+        "status": "compliant",
+        "evidence": [
+          {
+            "type": "monitoring_active",
+            "value": true
+          }
+        ],
+        "gaps": []
+      }
+    ],
+    "evidenceGathered": {
+      "auditLogs": 8362,
+      "credentialRotations": [],
+      "activeAlerts": [],
+      "systemHealth": {
+        "totalErrors": 0,
+        "errorsByType": {},
+        "activeAlertsCount": 0,
+        "alertsByLevel": {
+          "info": 0,
+          "warning": 0,
+          "error": 0,
+          "critical": 0
+        },
+        "systemHealth": {
+          "overallStatus": "healthy",
+          "errorRate": 0,
+          "topErrors": []
+        }
+      }
+    },
+    "riskAssessment": {
+      "high": [],
+      "medium": [],
+      "low": []
+    }
+  },
+  "evidence": {
+    "auditLogs": 8732,
+    "securityScans": 0,
+    "policyDocuments": 0,
+    "incidents": 0
+  }
+}
