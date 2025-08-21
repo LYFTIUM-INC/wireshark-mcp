@@ -1,4 +1,4 @@
-# 🦈 Wireshark MCP Server - Complete Edition
+# 🦈 Wireshark MCP Server - Production Ready
 
 > **Professional Wireshark MCP server with 18 comprehensive network analysis tools for Claude Desktop integration.**
 
@@ -6,6 +6,7 @@
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
 [![Claude Desktop](https://img.shields.io/badge/Claude-Desktop-orange.svg)](https://claude.ai/desktop)
 [![18 Tools](https://img.shields.io/badge/Tools-18-brightgreen.svg)](#tools)
+[![Test Status](https://img.shields.io/badge/Tests-94.4%25-success.svg)](#test-results)
 
 ## 🚀 **Features**
 
@@ -228,6 +229,24 @@ sudo /Applications/Wireshark.app/Contents/MacOS/Wireshark
 
 ---
 
+## ✅ **Test Results**
+
+**Latest Test Date**: 2025-08-20  
+**Success Rate**: 94.4% (17/18 tools fully operational)
+
+| Category | Tools | Status |
+|----------|-------|--------|
+| Core System Tools | 3/3 | ✅ 100% |
+| Capture Tools | 2/2 | ✅ 100% |
+| Analysis Tools | 4/4 | ✅ 100% |
+| PCAP Manipulation | 4/4 | ✅ 100% |
+| Protocol Analyzers | 4/4 | ✅ 100% |
+| Remote Capture | 0/1 | ⚠️ Requires SSH |
+
+See [WIRESHARK_MCP_TEST_REPORT.md](WIRESHARK_MCP_TEST_REPORT.md) for detailed test results.
+
+---
+
 ## 📊 **Performance**
 
 - **Processing Rate**: 10,000+ packets/second
@@ -235,6 +254,7 @@ sudo /Applications/Wireshark.app/Contents/MacOS/Wireshark
 - **Memory Efficient**: Chunked processing for large files  
 - **Real-time**: Sub-second response times
 - **Concurrent**: Multiple analysis operations supported
+- **Average Response**: ~300ms per operation
 
 ---
 
