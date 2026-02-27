@@ -1,0 +1,1020 @@
+[
+  {
+    "tool": "list_tools",
+    "test": "Tool Registration",
+    "status": "PASS",
+    "details": "Found 18 tools, expected 18. Missing: []",
+    "duration_ms": 0.27,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.409839"
+  },
+  {
+    "tool": "wireshark_system_info",
+    "test": "info_type=all",
+    "status": "FAIL",
+    "details": "\ud83e\udd88 **Wireshark MCP System Information**\n\n{\n  \"wireshark_mcp_server\": \"2.0.0 Enhanced\",\n  \"status\": \"\\u2705 Active\",\n  \"capabilities\": [\n    \"Live Capture\",\n    \"PCAP Analysis\",\n    \"Filter Generation\",",
+    "duration_ms": 0.71,
+    "severity": "info",
+    "gaps": [
+      "System info failed for type=all"
+    ],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.410579"
+  },
+  {
+    "tool": "wireshark_system_info",
+    "test": "info_type=interfaces",
+    "status": "FAIL",
+    "details": "\ud83e\udd88 **Wireshark MCP System Information**\n\n{\n  \"wireshark_mcp_server\": \"2.0.0 Enhanced\",\n  \"status\": \"\\u2705 Active\",\n  \"capabilities\": [\n    \"Live Capture\",\n    \"PCAP Analysis\",\n    \"Filter Generation\",",
+    "duration_ms": 0.44,
+    "severity": "info",
+    "gaps": [
+      "System info failed for type=interfaces"
+    ],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.411034"
+  },
+  {
+    "tool": "wireshark_system_info",
+    "test": "info_type=capabilities",
+    "status": "PASS",
+    "details": "\ud83e\udd88 **Wireshark MCP System Information**\n\n{\n  \"wireshark_mcp_server\": \"2.0.0 Enhanced\",\n  \"status\": \"\\u2705 Active\",\n  \"capabilities\": [\n    \"Live Capture\",\n    \"PCAP Analysis\",\n    \"Filter Generation\",",
+    "duration_ms": 0.2,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.411243"
+  },
+  {
+    "tool": "wireshark_system_info",
+    "test": "info_type=system",
+    "status": "PASS",
+    "details": "\ud83e\udd88 **Wireshark MCP System Information**\n\n{\n  \"wireshark_mcp_server\": \"2.0.0 Enhanced\",\n  \"status\": \"\\u2705 Active\",\n  \"capabilities\": [\n    \"Live Capture\",\n    \"PCAP Analysis\",\n    \"Filter Generation\",",
+    "duration_ms": 0.04,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.411291"
+  },
+  {
+    "tool": "wireshark_validate_setup",
+    "test": "full_check=False",
+    "status": "WARN",
+    "details": "\ud83d\udd0d **Wireshark MCP Setup Validation**\n\n{\n  \"wireshark_mcp_server\": \"\\u2705 Running (Enhanced Version)\",\n  \"python_version\": \"\\u2705 3.12.3\",\n  \"dependencies\": {\n    \"tshark\": \"\\u2705 /usr/bin/tshark\",\n",
+    "duration_ms": 3.8,
+    "severity": "info",
+    "gaps": [
+      "editcap not validated but used by server",
+      "mergecap not validated but used by server",
+      "text2pcap not validated but used by server"
+    ],
+    "recommendations": [
+      "Add editcap to dependency validation list",
+      "Add mergecap to dependency validation list",
+      "Add text2pcap to dependency validation list"
+    ],
+    "timestamp": "2026-02-27T01:11:12.415120"
+  },
+  {
+    "tool": "wireshark_validate_setup",
+    "test": "full_check=True",
+    "status": "WARN",
+    "details": "\ud83d\udd0d **Wireshark MCP Setup Validation**\n\n{\n  \"wireshark_mcp_server\": \"\\u2705 Running (Enhanced Version)\",\n  \"python_version\": \"\\u2705 3.12.3\",\n  \"dependencies\": {\n    \"tshark\": \"\\u2705 /usr/bin/tshark\",\n",
+    "duration_ms": 3.43,
+    "severity": "info",
+    "gaps": [
+      "editcap not validated but used by server",
+      "mergecap not validated but used by server",
+      "text2pcap not validated but used by server"
+    ],
+    "recommendations": [
+      "Add editcap to dependency validation list",
+      "Add mergecap to dependency validation list",
+      "Add text2pcap to dependency validation list"
+    ],
+    "timestamp": "2026-02-27T01:11:12.418571"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc='show me all HTTP traffic'",
+    "status": "PASS",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: show me all HTTP traffic\n\n**Filter**: `http`\n\n**Details**:\n{\n  \"description\": \"show me all HTTP traffic\",",
+    "duration_ms": 0.89,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.419487"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc='DNS queries from 192.168.1.1'",
+    "status": "PASS",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: DNS queries from 192.168.1.1\n\n**Filter**: `(ip.addr == 192.168.1.1) and (dns)`\n\n**Details**:\n{\n  \"descrip",
+    "duration_ms": 0.09,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.419595"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc='traffic on port 443'",
+    "status": "PASS",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: traffic on port 443\n\n**Filter**: `tcp.port == 443 or udp.port == 443`\n\n**Details**:\n{\n  \"description\": \"t",
+    "duration_ms": 0.08,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.419687"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc='show TCP retransmissions'",
+    "status": "PASS",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: show TCP retransmissions\n\n**Filter**: `tcp.analysis.retransmission or tcp.analysis.duplicate_ack`\n\n**Deta",
+    "duration_ms": 0.06,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.419755"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc='traffic from subnet 10.0.0.0/2'",
+    "status": "PASS",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: traffic from subnet 10.0.0.0/24\n\n**Filter**: `(ip.addr == 10.0.0.0) and (ip.addr == 10.0.0.0/24)`\n\n**Deta",
+    "duration_ms": 0.07,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.419832"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc='large packets over 1500 bytes'",
+    "status": "PASS",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: large packets over 1500 bytes\n\n**Filter**: `frame.len > 1500`\n\n**Details**:\n{\n  \"description\": \"large pac",
+    "duration_ms": 0.06,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.419896"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc='SSH connections'",
+    "status": "PASS",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: SSH connections\n\n**Filter**: `ssh`\n\n**Details**:\n{\n  \"description\": \"SSH connections\",\n  \"generated_filte",
+    "duration_ms": 0.05,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.419955"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc='slow connections with high lat'",
+    "status": "PASS",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: slow connections with high latency\n\n**Filter**: `(tcp.analysis.ack_rtt > 0.1) and (tcp.analysis.ack_rtt >",
+    "duration_ms": 0.06,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.420021"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc=''",
+    "status": "WARN",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: \n\n**Filter**: `tcp`\n\n**Details**:\n{\n  \"description\": \"\",\n  \"generated_filter\": \"tcp\",\n  \"complexity\": \"in",
+    "duration_ms": 0.05,
+    "severity": "info",
+    "gaps": [
+      "Empty description doesn't produce error"
+    ],
+    "recommendations": [
+      "Validate empty input and return error"
+    ],
+    "timestamp": "2026-02-27T01:11:12.420075"
+  },
+  {
+    "tool": "wireshark_generate_filter",
+    "test": "desc='gibberish xyzzy traffic'",
+    "status": "PASS",
+    "details": "\ud83c\udfaf **Generated Wireshark Filter**\n\n**Input**: gibberish xyzzy traffic\n\n**Filter**: `tcp or udp`\n\n**Details**:\n{\n  \"description\": \"gibberish xyzzy traff",
+    "duration_ms": 0.05,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.420130"
+  },
+  {
+    "tool": "wireshark_analyze_pcap",
+    "test": "type=quick",
+    "status": "WARN",
+    "details": "\ud83d\udcca **PCAP Analysis Results**\n\n{\n  \"status\": \"\\u2705 Analysis Complete\",\n  \"file_info\": {\n    \"file\": \"/tmp/test_sample.pcap\",\n    \"file_size\": \"388 bytes\",\n    \"analysis_type\": \"quick\",\n    \"file_detai",
+    "duration_ms": 205.26,
+    "severity": "info",
+    "gaps": [
+      "Response missing clear status indicator"
+    ],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:12.625439"
+  },
+  {
+    "tool": "wireshark_analyze_pcap",
+    "test": "type=comprehensive",
+    "status": "WARN",
+    "details": "\ud83d\udcca **PCAP Analysis Results**\n\n{\n  \"status\": \"\\u2705 Analysis Complete\",\n  \"file_info\": {\n    \"file\": \"/tmp/test_sample.pcap\",\n    \"file_size\": \"388 bytes\",\n    \"analysis_type\": \"comprehensive\",\n    \"fi",
+    "duration_ms": 1152.97,
+    "severity": "info",
+    "gaps": [
+      "Response missing clear status indicator"
+    ],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:13.778438"
+  },
+  {
+    "tool": "wireshark_analyze_pcap",
+    "test": "type=security",
+    "status": "WARN",
+    "details": "\ud83d\udcca **PCAP Analysis Results**\n\n{\n  \"status\": \"\\u2705 Analysis Complete\",\n  \"file_info\": {\n    \"file\": \"/tmp/test_sample.pcap\",\n    \"file_size\": \"388 bytes\",\n    \"analysis_type\": \"security\",\n    \"file_de",
+    "duration_ms": 468.55,
+    "severity": "info",
+    "gaps": [
+      "Response missing clear status indicator"
+    ],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:14.247018"
+  },
+  {
+    "tool": "wireshark_analyze_pcap",
+    "test": "type=performance",
+    "status": "WARN",
+    "details": "\ud83d\udcca **PCAP Analysis Results**\n\n{\n  \"status\": \"\\u2705 Analysis Complete\",\n  \"file_info\": {\n    \"file\": \"/tmp/test_sample.pcap\",\n    \"file_size\": \"388 bytes\",\n    \"analysis_type\": \"performance\",\n    \"file",
+    "duration_ms": 377.3,
+    "severity": "info",
+    "gaps": [
+      "Response missing clear status indicator"
+    ],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:14.624348"
+  },
+  {
+    "tool": "wireshark_analyze_pcap",
+    "test": "nonexistent_file",
+    "status": "PASS",
+    "details": "\u274c Error: File not found: /tmp/nonexistent.pcap",
+    "duration_ms": 0.17,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:14.624540"
+  },
+  {
+    "tool": "wireshark_analyze_pcap",
+    "test": "empty_filepath",
+    "status": "PASS",
+    "details": "\u274c Error: No filepath provided",
+    "duration_ms": 0.03,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [
+      "Validate filepath is non-empty"
+    ],
+    "timestamp": "2026-02-27T01:11:14.624577"
+  },
+  {
+    "tool": "wireshark_live_capture",
+    "test": "lo_interface",
+    "status": "WARN",
+    "details": "\ud83d\udce1 **Live Packet Capture Results**\n\n{\n  \"status\": \"\\u274c All capture methods failed\",\n  \"method_used\": \"none - all fallbacks exhausted\",\n  \"interface\": \"lo\",\n  \"duration\": 3,\n  \"filter\": \"\",\n  \"max_packets\": 10,\n  \"capture_time_seconds\": 0.13,\n  \"error\": \"Permission denied - tshark, tcpdump, and sg ",
+    "duration_ms": 130.71,
+    "severity": "info",
+    "gaps": [
+      "Permission issues prevent live capture"
+    ],
+    "recommendations": [
+      "Configure cap_net_raw capability or run with appropriate permissions"
+    ],
+    "timestamp": "2026-02-27T01:11:14.755303"
+  },
+  {
+    "tool": "wireshark_realtime_json_capture",
+    "test": "format=ek",
+    "status": "PASS",
+    "details": "\ud83d\udce1 **Real-time JSON Capture Results**\n\n```json\n{\n  \"capture_id\": \"capture_1772154674\",\n  \"status\": \"\\u2705 Capture Complete\",\n  \"interface\": \"lo\",\n  \"duration\": \"0.14 seconds\",\n  \"filter\": \"none\",\n  \"packets_captured\": 0,\n  \"json_format\": \"ek\",\n  \"sample_packets\": [],\n  \"total_packets_stored\": 0\n}\n``",
+    "duration_ms": 136.28,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:14.891683"
+  },
+  {
+    "tool": "wireshark_realtime_json_capture",
+    "test": "format=json",
+    "status": "WARN",
+    "details": "\u274c **Real-time Capture Failed**\n\nError: 'list' object has no attribute 'get'\n\nTroubleshooting:\n- Verify interface with: ip link show\n- Check permissions: groups $USER\n- Ensure TShark supports JSON: tshark -T ek -h",
+    "duration_ms": 135.21,
+    "severity": "info",
+    "gaps": [
+      "Permission issues for real-time JSON capture"
+    ],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:15.026925"
+  },
+  {
+    "tool": "wireshark_protocol_statistics",
+    "test": "type=protocol_hierarchy",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Protocol Statistics & Conversation Analysis**\n\n```json\n{\n  \"source\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"protocol_hierarchy\",\n  \"timestamp\": \"2026-02-27T01:11:15.130342\",\n  \"statistics\": ",
+    "duration_ms": 103.43,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:15.130431"
+  },
+  {
+    "tool": "wireshark_protocol_statistics",
+    "test": "type=conversations",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Protocol Statistics & Conversation Analysis**\n\n```json\n{\n  \"source\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"conversations\",\n  \"timestamp\": \"2026-02-27T01:11:15.422370\",\n  \"statistics\": {\n   ",
+    "duration_ms": 292.03,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:15.422486"
+  },
+  {
+    "tool": "wireshark_protocol_statistics",
+    "test": "type=endpoints",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Protocol Statistics & Conversation Analysis**\n\n```json\n{\n  \"source\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"endpoints\",\n  \"timestamp\": \"2026-02-27T01:11:15.715013\",\n  \"statistics\": {\n    \"en",
+    "duration_ms": 292.62,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:15.715130"
+  },
+  {
+    "tool": "wireshark_protocol_statistics",
+    "test": "type=io_stats",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Protocol Statistics & Conversation Analysis**\n\n```json\n{\n  \"source\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"io_stats\",\n  \"timestamp\": \"2026-02-27T01:11:15.806340\",\n  \"statistics\": {\n    \"io_",
+    "duration_ms": 91.27,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:15.806417"
+  },
+  {
+    "tool": "wireshark_protocol_statistics",
+    "test": "type=all",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Protocol Statistics & Conversation Analysis**\n\n```json\n{\n  \"source\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"all\",\n  \"timestamp\": \"2026-02-27T01:11:16.543191\",\n  \"statistics\": {\n    \"protocol",
+    "duration_ms": 736.93,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:16.543379"
+  },
+  {
+    "tool": "wireshark_analyze_pcap_enhanced",
+    "test": "type=quick,fmt=json",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Enhanced PCAP Analysis Results**\n\n```json\n{\n  \"file_info\": {\n    \"path\": \"/tmp/test_sample.pcap\",\n    \"size\": \"388 bytes\",\n    \"size_mb\": \"0.00 MB\"\n  },\n  \"file_metadata\": {},\n  \"quick_stats\": {\n ",
+    "duration_ms": 92.4,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:16.635850"
+  },
+  {
+    "tool": "wireshark_analyze_pcap_enhanced",
+    "test": "type=comprehensive,fmt=json",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Enhanced PCAP Analysis Results**\n\n```json\n{\n  \"file_info\": {\n    \"path\": \"/tmp/test_sample.pcap\",\n    \"size\": \"388 bytes\",\n    \"size_mb\": \"0.00 MB\"\n  },\n  \"file_metadata\": {},\n  \"protocol_hierarch",
+    "duration_ms": 1583.94,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:18.219818"
+  },
+  {
+    "tool": "wireshark_analyze_pcap_enhanced",
+    "test": "type=comprehensive,fmt=summary",
+    "status": "PASS",
+    "details": "\ud83d\udcca **PCAP Analysis Summary**\n\n**File**: /tmp/test_sample.pcap\n**Size**: 0.00 MB\n\n**Top Protocols**:\n- eth: 1 packets\n- ip: 1 packets\n- tcp: 1 packets\n\n\u26a0\ufe0f **Security Alerts**: 2 suspicious patterns dete",
+    "duration_ms": 1644.0,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:19.863861"
+  },
+  {
+    "tool": "wireshark_analyze_pcap_enhanced",
+    "test": "type=comprehensive,fmt=text",
+    "status": "PASS",
+    "details": "============================================================\nENHANCED PCAP ANALYSIS REPORT\n============================================================\n\nfile_info:\n  path: /tmp/test_sample.pcap\n  size",
+    "duration_ms": 1627.97,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:21.491869"
+  },
+  {
+    "tool": "wireshark_analyze_pcap_enhanced",
+    "test": "type=security,fmt=json",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Enhanced PCAP Analysis Results**\n\n```json\n{\n  \"file_info\": {\n    \"path\": \"/tmp/test_sample.pcap\",\n    \"size\": \"388 bytes\",\n    \"size_mb\": \"0.00 MB\"\n  },\n  \"file_metadata\": {},\n  \"security_analysis",
+    "duration_ms": 666.54,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:22.158453"
+  },
+  {
+    "tool": "wireshark_analyze_pcap_enhanced",
+    "test": "type=performance,fmt=json",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Enhanced PCAP Analysis Results**\n\n```json\n{\n  \"file_info\": {\n    \"path\": \"/tmp/test_sample.pcap\",\n    \"size\": \"388 bytes\",\n    \"size_mb\": \"0.00 MB\"\n  },\n  \"file_metadata\": {},\n  \"performance_analy",
+    "duration_ms": 601.23,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:22.759729"
+  },
+  {
+    "tool": "wireshark_analyze_pcap_enhanced",
+    "test": "type=conversations,fmt=json",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Enhanced PCAP Analysis Results**\n\n```json\n{\n  \"file_info\": {\n    \"path\": \"/tmp/test_sample.pcap\",\n    \"size\": \"388 bytes\",\n    \"size_mb\": \"0.00 MB\"\n  },\n  \"file_metadata\": {},\n  \"conversations\": {",
+    "duration_ms": 287.61,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.047380"
+  },
+  {
+    "tool": "wireshark_analyze_pcap_enhanced",
+    "test": "type=statistics,fmt=json",
+    "status": "PASS",
+    "details": "\ud83d\udcca **Enhanced PCAP Analysis Results**\n\n```json\n{\n  \"file_info\": {\n    \"path\": \"/tmp/test_sample.pcap\",\n    \"size\": \"388 bytes\",\n    \"size_mb\": \"0.00 MB\"\n  },\n  \"file_metadata\": {},\n  \"protocol_hierarch",
+    "duration_ms": 279.48,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.326888"
+  },
+  {
+    "tool": "wireshark_pcap_time_slice",
+    "test": "basic_slice",
+    "status": "PASS",
+    "details": "\ud83e\udd88 **PCAP Time Slice Results**\n\n\u2705 **Operation Successful**\n\n\ud83d\udcc1 **Files:**\n- Input: /tmp/test_sample.pcap\n- Output: /tmp/time_slice_test_sample_20260227_011123.pcap\n\n\u23f0 **Time Range:**\n- Start: 2020-01-01",
+    "duration_ms": 3.27,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.330301"
+  },
+  {
+    "tool": "wireshark_pcap_time_slice",
+    "test": "nonexistent_input",
+    "status": "PASS",
+    "details": "\u274c **PCAP Time Slice Failed**\n\nError: Input file not found",
+    "duration_ms": 0.1,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.330425"
+  },
+  {
+    "tool": "wireshark_pcap_splitter",
+    "test": "split_type=packets",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"split_by\": \"packets\",\n  \"packets_per_file\": 10,\n  \"created_files\": [\n    \"/tmp/split_test_sample_00000_20260227011112.pcap\"\n",
+    "duration_ms": 5.87,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.336316"
+  },
+  {
+    "tool": "wireshark_pcap_splitter",
+    "test": "split_type=time",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"split_by\": \"time\",\n  \"seconds_per_file\": 5,\n  \"created_files\": [\n    \"/tmp/split_time_test_sample_00000_20260227011112.pcap\"",
+    "duration_ms": 2.85,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.339181"
+  },
+  {
+    "tool": "wireshark_pcap_merger",
+    "test": "chronological_merge",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_files\": [\n    \"/tmp/test_sample.pcap\",\n    \"/tmp/test_sample_2.pcap\"\n  ],\n  \"output_file\": \"/tmp/test_merged_output.pcap\",\n  \"merge_mode\": \"chronological\",\n  \"",
+    "duration_ms": 5.44,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.344716"
+  },
+  {
+    "tool": "wireshark_pcap_merger",
+    "test": "nonexistent_files",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u274c Error\",\n  \"error\": \"File not found: /tmp/no_file_1.pcap\"\n}",
+    "duration_ms": 0.1,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.344831"
+  },
+  {
+    "tool": "wireshark_hex_to_pcap",
+    "test": "protocol=ethernet",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"output_file\": \"/tmp/test_hex_output.pcap\",\n  \"file_size_bytes\": 376,\n  \"protocol\": \"ethernet\",\n  \"message\": \"Conversion successful\"\n}",
+    "duration_ms": 21.62,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.366468"
+  },
+  {
+    "tool": "wireshark_hex_to_pcap",
+    "test": "protocol=tcp",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"output_file\": \"/tmp/test_hex_output.pcap\",\n  \"file_size_bytes\": 416,\n  \"protocol\": \"tcp\",\n  \"message\": \"Conversion successful\"\n}",
+    "duration_ms": 21.05,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.387535"
+  },
+  {
+    "tool": "wireshark_hex_to_pcap",
+    "test": "protocol=udp",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"output_file\": \"/tmp/test_hex_output.pcap\",\n  \"file_size_bytes\": 404,\n  \"protocol\": \"udp\",\n  \"message\": \"Conversion successful\"\n}",
+    "duration_ms": 19.92,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.407470"
+  },
+  {
+    "tool": "wireshark_http_analyzer",
+    "test": "type=comprehensive",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"comprehensive\",\n  \"results\": {\n    \"transactions\": {\n      \"count\": 0,\n      \"transactions\": [],\n      \"met",
+    "duration_ms": 190.79,
+    "severity": "info",
+    "gaps": [
+      "HTTP performance metrics are stub (N/A)"
+    ],
+    "recommendations": [
+      "Implement actual HTTP response time calculation using tshark"
+    ],
+    "timestamp": "2026-02-27T01:11:23.598333"
+  },
+  {
+    "tool": "wireshark_http_analyzer",
+    "test": "type=transactions",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"transactions\",\n  \"results\": {\n    \"transactions\": {\n      \"count\": 0,\n      \"transactions\": [],\n      \"meth",
+    "duration_ms": 97.12,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.695496"
+  },
+  {
+    "tool": "wireshark_http_analyzer",
+    "test": "type=performance",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"performance\",\n  \"results\": {\n    \"performance\": {\n      \"average_response_time\": \"N/A\",\n      \"throughput\":",
+    "duration_ms": 0.15,
+    "severity": "info",
+    "gaps": [
+      "HTTP performance metrics are stub (N/A)"
+    ],
+    "recommendations": [
+      "Implement actual HTTP response time calculation using tshark"
+    ],
+    "timestamp": "2026-02-27T01:11:23.695669"
+  },
+  {
+    "tool": "wireshark_http_analyzer",
+    "test": "type=security",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"security\",\n  \"results\": {\n    \"security\": {\n      \"suspicious_patterns\": [],\n      \"unencrypted_sensitive_d",
+    "duration_ms": 95.88,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:23.791583"
+  },
+  {
+    "tool": "wireshark_dns_analyzer",
+    "test": "type=comprehensive",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"comprehensive\",\n  \"results\": {\n    \"queries\": {\n      \"total_queries\": 0,\n      \"unique_domains\": 0,\n      ",
+    "duration_ms": 192.81,
+    "severity": "info",
+    "gaps": [
+      "DNS response analysis is stub",
+      "DNS intelligence gathering returns empty results"
+    ],
+    "recommendations": [
+      "Implement actual DNS response parsing",
+      "Implement DNS intelligence with domain frequency analysis"
+    ],
+    "timestamp": "2026-02-27T01:11:23.984503"
+  },
+  {
+    "tool": "wireshark_dns_analyzer",
+    "test": "type=queries",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"queries\",\n  \"results\": {\n    \"queries\": {\n      \"total_queries\": 0,\n      \"unique_domains\": 0,\n      \"top_q",
+    "duration_ms": 193.4,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:24.177952"
+  },
+  {
+    "tool": "wireshark_dns_analyzer",
+    "test": "type=responses",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"responses\",\n  \"results\": {\n    \"responses\": {\n      \"total_responses\": 0,\n      \"response_codes\": {},\n     ",
+    "duration_ms": 92.5,
+    "severity": "info",
+    "gaps": [
+      "DNS response analysis is stub"
+    ],
+    "recommendations": [
+      "Implement actual DNS response parsing"
+    ],
+    "timestamp": "2026-02-27T01:11:24.270498"
+  },
+  {
+    "tool": "wireshark_dns_analyzer",
+    "test": "type=intelligence",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"intelligence\",\n  \"results\": {\n    \"intelligence\": {\n      \"suspicious_domains\": [],\n      \"domain_frequency",
+    "duration_ms": 92.33,
+    "severity": "info",
+    "gaps": [
+      "DNS intelligence gathering returns empty results"
+    ],
+    "recommendations": [
+      "Implement DNS intelligence with domain frequency analysis"
+    ],
+    "timestamp": "2026-02-27T01:11:24.362866"
+  },
+  {
+    "tool": "wireshark_ssl_inspector",
+    "test": "type=comprehensive",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"comprehensive\",\n  \"results\": {\n    \"handshakes\": {\n      \"total_handshakes\": 0,\n      \"handshake_types\": {}",
+    "duration_ms": 96.06,
+    "severity": "info",
+    "gaps": [
+      "Certificate analysis is stub - returns empty details",
+      "Cipher suite analysis is stub - returns empty lists"
+    ],
+    "recommendations": [
+      "Implement certificate extraction using tshark x509 fields",
+      "Extract cipher suites using tls.handshake.ciphersuite field"
+    ],
+    "timestamp": "2026-02-27T01:11:24.459001"
+  },
+  {
+    "tool": "wireshark_ssl_inspector",
+    "test": "type=handshakes",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"handshakes\",\n  \"results\": {\n    \"handshakes\": {\n      \"total_handshakes\": 0,\n      \"handshake_types\": {},\n ",
+    "duration_ms": 91.25,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:24.550283"
+  },
+  {
+    "tool": "wireshark_ssl_inspector",
+    "test": "type=certificates",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"certificates\",\n  \"results\": {\n    \"certificates\": {\n      \"certificates_found\": 0,\n      \"certificate_detai",
+    "duration_ms": 0.12,
+    "severity": "info",
+    "gaps": [
+      "Certificate analysis is stub - returns empty details"
+    ],
+    "recommendations": [
+      "Implement certificate extraction using tshark x509 fields"
+    ],
+    "timestamp": "2026-02-27T01:11:24.550429"
+  },
+  {
+    "tool": "wireshark_ssl_inspector",
+    "test": "type=ciphers",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"ciphers\",\n  \"results\": {\n    \"cipher_suites\": {\n      \"cipher_suites_used\": [],\n      \"weak_ciphers\": [],\n ",
+    "duration_ms": 0.07,
+    "severity": "info",
+    "gaps": [
+      "Cipher suite analysis is stub - returns empty lists"
+    ],
+    "recommendations": [
+      "Extract cipher suites using tls.handshake.ciphersuite field"
+    ],
+    "timestamp": "2026-02-27T01:11:24.550508"
+  },
+  {
+    "tool": "wireshark_latency_profiler",
+    "test": "type=comprehensive",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"comprehensive\",\n  \"time_window\": 1.0,\n  \"results\": {\n    \"tcp_latency\": {\n      \"average_rtt\": 0,\n      \"mi",
+    "duration_ms": 98.63,
+    "severity": "info",
+    "gaps": [
+      "Application latency analysis is stub",
+      "Network latency analysis is stub"
+    ],
+    "recommendations": [
+      "Implement HTTP response time extraction via tshark",
+      "Implement traceroute-style latency analysis or ICMP RTT extraction"
+    ],
+    "timestamp": "2026-02-27T01:11:24.649187"
+  },
+  {
+    "tool": "wireshark_latency_profiler",
+    "test": "type=tcp",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"tcp\",\n  \"time_window\": 1.0,\n  \"results\": {\n    \"tcp_latency\": {\n      \"average_rtt\": 0,\n      \"min_rtt\": 0,",
+    "duration_ms": 103.77,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:24.752996"
+  },
+  {
+    "tool": "wireshark_latency_profiler",
+    "test": "type=application",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"application\",\n  \"time_window\": 1.0,\n  \"results\": {\n    \"application_latency\": {\n      \"http_response_times\"",
+    "duration_ms": 0.14,
+    "severity": "info",
+    "gaps": [
+      "Application latency analysis is stub"
+    ],
+    "recommendations": [
+      "Implement HTTP response time extraction via tshark"
+    ],
+    "timestamp": "2026-02-27T01:11:24.753161"
+  },
+  {
+    "tool": "wireshark_latency_profiler",
+    "test": "type=network",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"analysis_type\": \"network\",\n  \"time_window\": 1.0,\n  \"results\": {\n    \"network_latency\": {\n      \"hop_latencies\": [],\n      \"p",
+    "duration_ms": 0.15,
+    "severity": "info",
+    "gaps": [
+      "Network latency analysis is stub"
+    ],
+    "recommendations": [
+      "Implement traceroute-style latency analysis or ICMP RTT extraction"
+    ],
+    "timestamp": "2026-02-27T01:11:24.753326"
+  },
+  {
+    "tool": "wireshark_threat_detector",
+    "test": "mode=comprehensive,sens=low",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"detection_mode\": \"comprehensive\",\n  \"sensitivity\": \"low\",\n  \"results\": {\n    \"anomalies\": {\n      \"anomalies_detected\": 0,\n ",
+    "duration_ms": 95.43,
+    "severity": "info",
+    "gaps": [
+      "Signature detection is stub - no actual signatures defined",
+      "Behavioral analysis is stub"
+    ],
+    "recommendations": [
+      "Implement signature database with known threat patterns",
+      "Implement behavioral analysis with traffic pattern baselines"
+    ],
+    "timestamp": "2026-02-27T01:11:24.848813"
+  },
+  {
+    "tool": "wireshark_threat_detector",
+    "test": "mode=comprehensive,sens=medium",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"detection_mode\": \"comprehensive\",\n  \"sensitivity\": \"medium\",\n  \"results\": {\n    \"anomalies\": {\n      \"anomalies_detected\": 0",
+    "duration_ms": 93.97,
+    "severity": "info",
+    "gaps": [
+      "Signature detection is stub - no actual signatures defined",
+      "Behavioral analysis is stub"
+    ],
+    "recommendations": [
+      "Implement signature database with known threat patterns",
+      "Implement behavioral analysis with traffic pattern baselines"
+    ],
+    "timestamp": "2026-02-27T01:11:24.942832"
+  },
+  {
+    "tool": "wireshark_threat_detector",
+    "test": "mode=comprehensive,sens=high",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"detection_mode\": \"comprehensive\",\n  \"sensitivity\": \"high\",\n  \"results\": {\n    \"anomalies\": {\n      \"anomalies_detected\": 0,\n",
+    "duration_ms": 100.48,
+    "severity": "info",
+    "gaps": [
+      "Signature detection is stub - no actual signatures defined",
+      "Behavioral analysis is stub"
+    ],
+    "recommendations": [
+      "Implement signature database with known threat patterns",
+      "Implement behavioral analysis with traffic pattern baselines"
+    ],
+    "timestamp": "2026-02-27T01:11:25.043355"
+  },
+  {
+    "tool": "wireshark_threat_detector",
+    "test": "mode=anomaly,sens=medium",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"detection_mode\": \"anomaly\",\n  \"sensitivity\": \"medium\",\n  \"results\": {\n    \"anomalies\": {\n      \"anomalies_detected\": 0,\n    ",
+    "duration_ms": 98.85,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:25.142243"
+  },
+  {
+    "tool": "wireshark_threat_detector",
+    "test": "mode=signature,sens=medium",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"detection_mode\": \"signature\",\n  \"sensitivity\": \"medium\",\n  \"results\": {\n    \"signature_matches\": {\n      \"signatures_matched",
+    "duration_ms": 0.13,
+    "severity": "info",
+    "gaps": [
+      "Signature detection is stub - no actual signatures defined"
+    ],
+    "recommendations": [
+      "Implement signature database with known threat patterns"
+    ],
+    "timestamp": "2026-02-27T01:11:25.142401"
+  },
+  {
+    "tool": "wireshark_threat_detector",
+    "test": "mode=behavioral,sens=medium",
+    "status": "PASS",
+    "details": "{\n  \"status\": \"\\u2705 Success\",\n  \"input_file\": \"/tmp/test_sample.pcap\",\n  \"detection_mode\": \"behavioral\",\n  \"sensitivity\": \"medium\",\n  \"results\": {\n    \"behavioral_analysis\": {\n      \"suspicious_beha",
+    "duration_ms": 0.06,
+    "severity": "info",
+    "gaps": [
+      "Behavioral analysis is stub"
+    ],
+    "recommendations": [
+      "Implement behavioral analysis with traffic pattern baselines"
+    ],
+    "timestamp": "2026-02-27T01:11:25.142472"
+  },
+  {
+    "tool": "wireshark_remote_capture",
+    "test": "localhost_test",
+    "status": "EXPECTED_FAIL",
+    "details": "{\n  \"status\": \"\\u274c Error\",\n  \"error\": \"ssh: connect to host localhost port 22: Connection refused\\r\\n\"\n}",
+    "duration_ms": 5.71,
+    "severity": "info",
+    "gaps": [
+      "Remote capture requires SSH connectivity"
+    ],
+    "recommendations": [
+      "Add SSH connection validation before attempting capture",
+      "Add timeout configuration for SSH connection attempts"
+    ],
+    "timestamp": "2026-02-27T01:11:25.148194"
+  },
+  {
+    "tool": "helpers",
+    "test": "parse_protocol_hierarchy",
+    "status": "PASS",
+    "details": "Parsed 5 protocols",
+    "duration_ms": 0.03,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:25.148233"
+  },
+  {
+    "tool": "helpers",
+    "test": "parse_ip_range",
+    "status": "PASS",
+    "details": "ip.addr >= 192.168.1.1 and ip.addr <= 192.168.1.100",
+    "duration_ms": 0.01,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:25.148246"
+  },
+  {
+    "tool": "helpers",
+    "test": "combine_filters",
+    "status": "PASS",
+    "details": "(http) and (ip.addr == 10.0.0.1)",
+    "duration_ms": 0.01,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:25.148263"
+  },
+  {
+    "tool": "helpers",
+    "test": "advanced_filter_generation",
+    "status": "PASS",
+    "details": "(ip.addr == 192.168.1.1) and (http)",
+    "duration_ms": 0.09,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:25.148361"
+  },
+  {
+    "tool": "helpers",
+    "test": "parse_capinfos_machine_output",
+    "status": "PASS",
+    "details": "{'File name': 'test.pcap', 'Number of packets': '100', 'File size': '5000 bytes'}",
+    "duration_ms": 0.01,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:25.148371"
+  },
+  {
+    "tool": "error_handling",
+    "test": "unknown_tool",
+    "status": "PASS",
+    "details": "\u274c Unknown tool: nonexistent_tool",
+    "duration_ms": 0.06,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:25.148436"
+  },
+  {
+    "tool": "error_handling",
+    "test": "none_args",
+    "status": "PASS",
+    "details": "Handled None args",
+    "duration_ms": 0.07,
+    "severity": "info",
+    "gaps": [],
+    "recommendations": [],
+    "timestamp": "2026-02-27T01:11:25.148512"
+  },
+  {
+    "tool": "mcp_compliance",
+    "test": "schema_validation",
+    "status": "PASS",
+    "details": "1 issues found",
+    "duration_ms": 0.15,
+    "severity": "info",
+    "gaps": [
+      "No MCP resources registered (prompts, resources, etc.)"
+    ],
+    "recommendations": [
+      "Consider adding MCP resources for common PCAP samples or documentation",
+      "Consider adding MCP prompts for guided network analysis workflows"
+    ],
+    "timestamp": "2026-02-27T01:11:25.148689"
+  },
+  {
+    "tool": "code_quality",
+    "test": "analysis",
+    "status": "WARN",
+    "details": "5 issues found",
+    "duration_ms": 0.96,
+    "severity": "info",
+    "gaps": [
+      "Found 14 synchronous subprocess.run() calls that block the event loop",
+      "Found 1 bare except clauses",
+      "Found 6 hardcoded /tmp/ paths",
+      "Insufficient input validation - many args.get() without validation",
+      "Single file has 3696 lines - consider modularization"
+    ],
+    "recommendations": [
+      "Replace subprocess.run() with asyncio.create_subprocess_exec() for non-blocking execution",
+      "Use specific exception types instead of bare except",
+      "Use tempfile module consistently instead of hardcoded paths",
+      "Add comprehensive input validation for all tool parameters",
+      "Split server into modules: core, tools, analyzers, utilities"
+    ],
+    "timestamp": "2026-02-27T01:11:25.150379"
+  }
+]
